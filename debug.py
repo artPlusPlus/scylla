@@ -6,21 +6,20 @@ import threading
 import scylla
 
 
-def _task_handler(msg_type, msg_source, msg_body, msg_target):
-    print 'GOT TASK: {0}:{1}'.format(msg_type, msg_body)
+def _task_handler(envelope):
+    print 'GOT TASK: {0}:{1}'.format(envelope.message_type, envelope.message_body)
 
 
-def _test_pub(*msg_types):
-    with scylla.reply() as reply:
-        if reply.request.message_body == 'start':
-            reply.send(reply.request.sender, '_test_pub', 'starting',
-                       'sending updates')
+def _test_pub(target_subscriber, *msg_types):
+    with scylla.reply() as r:
+        if r.request.message_body == 'start':
+            r.reply('_test_pub', 'starting', 'sending updates to {0}'.format(target_subscriber))
 
     for i in xrange(0, 100):
-        print 'sending {0}'.format(i)
+        # print 'sending {0}'.format(i)
         for msg_type in msg_types:
             msg_body = str(i)
-            scylla.publish(None, '_test_pub', msg_type, msg_body)
+            scylla.publish(target_subscriber, '_test_pub', msg_type, msg_body)
 
     print 'sent all'
 
@@ -113,7 +112,7 @@ def _main():
     print 'setting up broker'
     b = scylla.Broker('Broker')
     b.start()
-    while not scylla.ping(node_id=b.id, timeout=1000):
+    while not scylla.ping(node_id=b.id, timeout=10 * 1000):
         pass
 
     print 'setting up subscriber'
@@ -124,20 +123,19 @@ def _main():
         pass
 
     print 'setting up publisher'
-    p = threading.Thread(target=_test_pub, args=['TASK'])
+    p = threading.Thread(target=_test_pub, args=[s.id, 'TASK'])
     p.start()
 
     print 'requesting updates'
-    rep_type, rep_source, rep_body = scylla.request('request', 'debug', 'start')
-    print msgpack.unpackb(rep_source), ' ', msgpack.unpackb(rep_body)
+    scylla.request('request', 'debug', 'start')
     time.sleep(5)
 
     print 'killing subscriber'
-    scylla.publish(str(s.id), 'debug', 'STOP', 'STOP')
+    scylla.publish(str(s.id), 'debug', 'stop', 'stop')
     s.join()
 
     print 'killing broker'
-    scylla.publish(str(b.id), 'debug', 'STOP', 'STOP')
+    scylla.publish(str(b.id), 'debug', 'stop', 'stop')
     b.join()
 
     print 'Cleaning up'

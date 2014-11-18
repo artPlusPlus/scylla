@@ -1,9 +1,7 @@
 import time
 from threading import Thread
-from contextlib import contextmanager
 
 import zmq
-import msgpack
 
 from . import DEFAULT_MSG_PUB_PORT, DEFAULT_GLB_PUB_PORT, DEFAULT_REQ_PORT
 from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT
@@ -33,12 +31,10 @@ def publish(msg_target, msg_source, msg_type, msg_body,
         socket.connect(address)
         _PUB_SOCKETS[address] = socket
 
-    # BUG - global subs are filtering by msg_type, while publishing puts msg_target first
     envelope = SimpleEnvelope(msg_target, msg_source, msg_type, msg_body)
     envelope = envelope.seal(msg_target if msg_target else msg_type)
-    # BUG
 
-    print 'pub', port
+    # print 'pub', port, msg_type
     socket.send_multipart(envelope)
 
 
@@ -57,16 +53,14 @@ def subscribe(destination_keys, timeout, host='localhost', port=DEFAULT_GLB_PUB_
 
     poller = zmq.Poller()
     poller.register(socket, zmq.POLLIN)
-    start = time.time()
-    while time.time() - start < timeout / 1000:
-        events = dict(poller.poll(timeout=timeout))
-        if socket in events:
-            msg_data = socket.recv_multipart()
-            try:
-                envelope = get_envelope_type(msg_data[-1])
-                result.append(envelope.unseal(msg_data))
-            except AttributeError:
-                result.append(msg_data)
+    events = dict(poller.poll(timeout=timeout))
+    if socket in events:
+        msg_data = socket.recv_multipart()
+        try:
+            envelope = get_envelope_type(msg_data[-1])
+            result.append(envelope.unseal(msg_data))
+        except AttributeError:
+            result.append(msg_data)
 
     socket.close()
     return result
@@ -86,8 +80,9 @@ def ping(node_id=None, timeout=None, port=None):
     result = []
     pong_thread = Thread(target=pong_handler, args=(timeout, port, result))
     pong_thread.start()
+    time.sleep(1)
     publish(node_id, 'util', 'ping', 'ping')
-    pong_thread.join(timeout=timeout)
+    pong_thread.join()
     try:
         return result[0]
     except IndexError:
@@ -144,10 +139,10 @@ class reply(object):
             self._request = request_data
         return self
 
-    def send(self, destination, sender, msg_type, msg_body):
-        message = SimpleEnvelope(destination, sender, msg_type, msg_body)
-        message = message.seal('')
-        self._socket.send(message)
+    def reply(self, sender, msg_type, msg_body):
+        message = SimpleEnvelope(self._request.sender, sender, msg_type, msg_body)
+        message = message.seal(self._request.sender)
+        self._socket.send_multipart(message)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:

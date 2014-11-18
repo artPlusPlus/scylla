@@ -6,7 +6,7 @@ import zmq
 
 from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT, DEFAULT_REQ_PORT
 from .base_envelope import get_envelope_type
-from .util import publish
+from .util import publish, terminate
 
 
 class Node(Process):
@@ -62,23 +62,25 @@ class Node(Process):
         self._poller = zmq.Poller()
         self._socket_handlers = {}
 
-        # Register handler for stopping and getting pinged
+        # Register basic direct message handlers
+        self.register_direct_message_handler('prime_direct', self._received_direct_primer)
         self.register_direct_message_handler('stop', self._received_stop)
         self.register_direct_message_handler('ping', self._received_direct_ping)
 
         # The direct message stream only receives messages addressed to this node
         self._direct_stream = self._context.socket(zmq.SUB)
-        print '[{0}]'.format(self.id), 'connecting direct sub', self._direct_port
+        # print '[{0}]'.format(self.id), 'connecting direct sub', self._direct_port
         self._direct_stream.connect('tcp://localhost:{0}'.format(self._direct_port))
         self._direct_stream.setsockopt(zmq.SUBSCRIBE, str(self.id))
         self._register_socket(self._direct_stream, zmq.POLLIN, self._process_direct_message)
 
-        # Register handle for receiving a global ping
+        # Register basic global message handlers
+        self.register_global_message_handler('prime_global', self._received_global_primer)
         self.register_global_message_handler('ping', self._received_global_ping)
 
         # The global message stream receives messages based on handled types
         self._global_stream = self._context.socket(zmq.SUB)
-        print '[{0}]'.format(self.id), 'connecting global sub', self._global_port
+        # print '[{0}]'.format(self.id), 'connecting global sub', self._global_port
         self._global_stream.connect('tcp://localhost:{0}'.format(self._global_port))
         for message_type in self._global_message_handlers:
             self._global_stream.setsockopt(zmq.SUBSCRIBE, str(message_type))
@@ -93,17 +95,17 @@ class Node(Process):
                     envelope_data = _socket.recv_multipart()
                     handler(envelope_data)
             if not self._direct_connection:
-                print 'direct ping'
-                publish(self.id, self.id, 'ping', 'ping')
+                # print '[{0}] priming direct connection'.format(self.id)
+                publish(self.id, self.id, 'prime_direct', 'prime_direct')
             if not self._global_connection:
-                print 'global ping'
-                publish(None, self.id, 'ping', 'ping')
+                # print '[{0}] priming global connection'.format(self.id)
+                publish(None, self.id, 'prime_global', 'prime_global')
 
     def _teardown(self):
         for _socket, _ in self._socket_handlers:
             _socket.close(linger=1000)
         publish(None, self.id, 'offline', 'offline')
-        self._context.term()
+        terminate()
 
     def register_direct_message_handler(self, message_type, handler):
         if message_type in self._direct_message_handlers:
@@ -134,7 +136,6 @@ class Node(Process):
             envelope = envelope.unseal(envelope_data)
         except AttributeError:
             envelope = envelope_data
-        print '[{0}]'.format(self.id), 'received direct message', envelope
         try:
             handler = self._direct_message_handlers[envelope.message_type]
         except KeyError:
@@ -148,7 +149,7 @@ class Node(Process):
             envelope = envelope.unseal(envelope_data)
         except AttributeError:
             envelope = envelope_data
-        print '[{0}]'.format(self.id), 'received global message', envelope
+        # print '[{0}]'.format(self.id), 'received global message', envelope
         try:
             handler = self._global_message_handlers[envelope.message_type]
         except KeyError:
@@ -160,18 +161,28 @@ class Node(Process):
         publish(None, self.id, 'stopping', 'stopping')
         self._run = False
 
-    def _received_direct_ping(self, envelope):
+    def _received_direct_primer(self, envelope):
         if envelope.sender == self.id:
             self._direct_connection = True
             if self._global_connection:
                 publish(None, self.id, 'online', 'online')
+                print '[{0}] ONLINE'.format(self.id)
+
+    def _received_global_primer(self, envelope):
+        if envelope.sender == self.id:
+            self._global_connection = True
+            if self._global_connection:
+                publish(None, self.id, 'online', 'online')
+                print '[{0}] ONLINE'.format(self.id)
+
+    def _received_direct_ping(self, envelope):
+        if not self._connnected:
             return
+        # print '{0} received direct ping from {1}'.format(self.id, envelope.sender)
         publish(envelope.sender, self.id, 'pong', 'tcp://{0}:{1}'.format(self.host_ip, self._direct_port))
 
     def _received_global_ping(self, envelope):
-        if envelope.sender == self.id:
-            self._global_connection = True
-            if self._direct_connection:
-                publish(None, self.id, 'online', 'online')
+        if not self._connnected:
             return
+        # print '{0} received global ping from {1}'.format(self.id, envelope.sender)
         publish(envelope.sender, self.id, 'pong', 'tcp://{0}:{1}'.format(self.host_ip, self._direct_port))
