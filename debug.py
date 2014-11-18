@@ -12,7 +12,7 @@ def _task_handler(msg_type, msg_source, msg_body, msg_target):
 
 def _test_pub(*msg_types):
     with scylla.reply() as reply:
-        if reply.request.msg_body == 'start':
+        if reply.request.message_body == 'start':
             reply.send(reply.request.sender, '_test_pub', 'starting',
                        'sending updates')
 
@@ -113,15 +113,15 @@ def _main():
     print 'setting up broker'
     b = scylla.Broker('Broker')
     b.start()
-    while b.id not in scylla.ping(node_id=b.id, timeout=1000):
-        time.sleep(1)
+    while not scylla.ping(node_id=b.id, timeout=1000):
+        pass
 
     print 'setting up subscriber'
     s = scylla.Node('SUBSCRIBER')
     s.register_direct_message_handler('TASK', _task_handler)
     s.start()
-    while s.id not in scylla.ping(node_id=s.id, timeout=1000):
-        time.sleep(1)
+    while not scylla.ping(node_id=s.id, timeout=1000):
+        pass
 
     print 'setting up publisher'
     p = threading.Thread(target=_test_pub, args=['TASK'])

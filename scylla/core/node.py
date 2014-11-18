@@ -90,8 +90,8 @@ class Node(Process):
             for _socket, event_mask in self._socket_handlers:
                 if events.get(_socket) == event_mask:
                     handler = self._socket_handlers[(_socket, event_mask)]
-                    msg_data = _socket.recv_multipart()
-                    handler(msg_data)
+                    envelope_data = _socket.recv_multipart()
+                    handler(envelope_data)
             if not self._direct_connection:
                 print 'direct ping'
                 publish(self.id, self.id, 'ping', 'ping')
@@ -128,12 +128,12 @@ class Node(Process):
         self._socket_handlers[(_socket, event_mask)] = handler
         self._poller.register(_socket, event_mask)
 
-    def _process_direct_message(self, msg_data):
+    def _process_direct_message(self, envelope_data):
         try:
-            envelope = get_envelope_type(msg_data[-1])
-            envelope = envelope.expand(msg_data)
+            envelope = get_envelope_type(envelope_data[-1])
+            envelope = envelope.unseal(envelope_data)
         except AttributeError:
-            envelope = msg_data
+            envelope = envelope_data
         print '[{0}]'.format(self.id), 'received direct message', envelope
         try:
             handler = self._direct_message_handlers[envelope.message_type]
@@ -142,15 +142,15 @@ class Node(Process):
             return
         handler(envelope)
 
-    def _process_global_message(self, msg_data):
+    def _process_global_message(self, envelope_data):
         try:
-            envelope = get_envelope_type(msg_data[-1])
-            envelope = envelope.expand(msg_data)
+            envelope = get_envelope_type(envelope_data[-1])
+            envelope = envelope.unseal(envelope_data)
         except AttributeError:
-            envelope = msg_data
+            envelope = envelope_data
         print '[{0}]'.format(self.id), 'received global message', envelope
         try:
-            handler = self._global_message_handlers[envelope.msg_type]
+            handler = self._global_message_handlers[envelope.message_type]
         except KeyError:
             print '[{0}] DROPPED MESSAGE - NO HANDLER: {1}'.format(self.id, envelope)
             return

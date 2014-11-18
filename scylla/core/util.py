@@ -6,6 +6,7 @@ import zmq
 import msgpack
 
 from . import DEFAULT_MSG_PUB_PORT, DEFAULT_GLB_PUB_PORT, DEFAULT_REQ_PORT
+from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT
 from .base_envelope import get_envelope_type
 from .simple_envelope import SimpleEnvelope
 
@@ -33,36 +34,37 @@ def publish(msg_target, msg_source, msg_type, msg_body,
         _PUB_SOCKETS[address] = socket
 
     # BUG - global subs are filtering by msg_type, while publishing puts msg_target first
-    envelope = SimpleEnvelope.compress(msg_target, msg_source, msg_type, msg_body)
+    envelope = SimpleEnvelope(msg_target, msg_source, msg_type, msg_body)
+    envelope = envelope.seal(msg_target if msg_target else msg_type)
     # BUG
 
     print 'pub', port
     socket.send_multipart(envelope)
 
 
-def subscribe(msg_filters, timeout, host='localhost', port=DEFAULT_GLB_PUB_PORT):
+def subscribe(destination_keys, timeout, host='localhost', port=DEFAULT_GLB_PUB_PORT):
     result = []
 
-    if isinstance(msg_filters, basestring):
-        msg_filters = (msg_filters,)
+    if isinstance(destination_keys, basestring):
+        destination_keys = (destination_keys,)
 
     address = 'tcp://{0}:{1}'.format(host, port)
     context = zmq.Context.instance()
     socket = context.socket(zmq.SUB)
     socket.connect(address)
-    for msg_filter in msg_filters:
-        socket.setsockopt(zmq.SUBSCRIBE, str(msg_filter))
+    for dest_key in destination_keys:
+        socket.setsockopt(zmq.SUBSCRIBE, str(dest_key))
 
     poller = zmq.Poller()
     poller.register(socket, zmq.POLLIN)
     start = time.time()
-    while time.time() - start < timeout:
+    while time.time() - start < timeout / 1000:
         events = dict(poller.poll(timeout=timeout))
         if socket in events:
             msg_data = socket.recv_multipart()
             try:
                 envelope = get_envelope_type(msg_data[-1])
-                result.append(envelope.expand(msg_data))
+                result.append(envelope.unseal(msg_data))
             except AttributeError:
                 result.append(msg_data)
 
@@ -71,24 +73,25 @@ def subscribe(msg_filters, timeout, host='localhost', port=DEFAULT_GLB_PUB_PORT)
 
 
 def ping(node_id=None, timeout=None, port=None):
-    def pong_handler(_node_id, _timeout, _port, _result):
+    def pong_handler(_timeout, _port, _result):
+        envelopes = subscribe('util', _timeout, port=_port)
+        envelopes = [e for e in envelopes if e.message_type == 'pong']
         if node_id:
-            _result.extend(subscribe(_node_id, _timeout, port=_port))
-        else:
-            _result.extend(subscribe('pong', _timeout, port=_port))
+            envelopes = [e for e in envelopes if e.sender == node_id]
+        _result.extend(envelopes)
 
     if not port:
-        port = DEFAULT_MSG_PUB_PORT if node_id else DEFAULT_GLB_PUB_PORT
+        port = DEFAULT_MSG_SUB_PORT if node_id else DEFAULT_GLB_SUB_PORT
 
     result = []
-    pong_thread = Thread(target=pong_handler, args=(node_id, timeout, port, result))
+    pong_thread = Thread(target=pong_handler, args=(timeout, port, result))
     pong_thread.start()
-    publish(node_id, 'anon', 'ping', 'ping')
+    publish(node_id, 'util', 'ping', 'ping')
     pong_thread.join(timeout=timeout)
     try:
         return result[0]
     except IndexError:
-        return result
+        return None
 
 
 def request(msg_type, msg_source, msg_body,
@@ -105,7 +108,8 @@ def request(msg_type, msg_source, msg_body,
         socket.connect(address)
         _REQ_SOCKETS[address] = socket
 
-    envelope = SimpleEnvelope.compress(address, msg_source, msg_type, msg_body)
+    envelope = SimpleEnvelope(address, msg_source, msg_type, msg_body)
+    envelope = envelope.seal('')
     socket.send_multipart(envelope)
     msg_data = socket.recv_multipart()
     try:
@@ -129,19 +133,20 @@ class reply(object):
 
     def __enter__(self):
         context = zmq.Context.instance()
-        socket = context.socket(zmq.REP)
-        socket.bind('tcp://*:{0}'.format(self._port))
+        self._socket = context.socket(zmq.REP)
+        self._socket.bind('tcp://*:{0}'.format(self._port))
 
-        request_data = socket.recv_multipart()
+        request_data = self._socket.recv_multipart()
         try:
             envelope = get_envelope_type(request_data[-1])
-            self._request = envelope.expand(request_data)
+            self._request = envelope.unseal(request_data)
         except AttributeError:
             self._request = request_data
         return self
 
     def send(self, destination, sender, msg_type, msg_body):
-        message = SimpleEnvelope.compress(destination, sender, msg_type, msg_body)
+        message = SimpleEnvelope(destination, sender, msg_type, msg_body)
+        message = message.seal('')
         self._socket.send(message)
 
     def __exit__(self, exc_type, exc_val, exc_tb):

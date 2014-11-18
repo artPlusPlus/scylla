@@ -1,5 +1,5 @@
 import weakref
-
+import ujson
 import msgpack
 
 
@@ -18,16 +18,24 @@ class _MetaEnvelope(type):
 class BaseEnvelope(object):
     __metaclass__ = _MetaEnvelope
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         super(BaseEnvelope, self).__init__()
 
-    @classmethod
-    def compress(cls, *args, **kwargs):
-        pass
+    def seal(self, destination_key):
+
+        result = [destination_key,
+                  self._pack(),
+                  msgpack.packb(self.__class__.__name__)]
+
+        return result
+
+    def _pack(self):
+        return ''
 
     @classmethod
-    def expand(cls, message_data):
-        pass
+    def unseal(cls, envelope_data):
+        msg_data = msgpack.unpackb(envelope_data[1])
+        return cls(**ujson.loads(msg_data))
 
 
 def get_envelope_type(envelope_name):

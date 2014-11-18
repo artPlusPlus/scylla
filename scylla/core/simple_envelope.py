@@ -1,4 +1,5 @@
 import msgpack
+import ujson
 
 from .base_envelope import BaseEnvelope
 
@@ -20,32 +21,17 @@ class SimpleEnvelope(BaseEnvelope):
     def message_body(self):
         return self._message_body
 
-    def __init__(self, destination, sender, msg_type, msg_body):
+    def __init__(self, destination=None, sender=None, msg_type=None, msg_body=None):
         super(SimpleEnvelope, self).__init__()
 
-        self._destination = destination
-        self._sender = sender
-        self._message_type = msg_type
-        self._message_body = msg_body
+        self._destination = str(destination) if destination else None
+        self._sender = str(sender) if sender else None
+        self._message_type = str(msg_type) if msg_type else None
+        self._message_body = str(msg_body) if msg_body else None
 
-    @classmethod
-    def compress(cls, destination, sender, type, body):
-        super(SimpleEnvelope, cls).compress()
-
-        result = [destination or '',
-                  msgpack.packb(sender),
-                  msgpack.packb(type),
-                  msgpack.packb(body),
-                  msgpack.packb(cls.__name__)]
-        return result
-
-    @classmethod
-    def expand(cls, message_data):
-        super(SimpleEnvelope, cls).expand(message_data)
-
-        destination = message_data[0] or None
-        sender = msgpack.unpackb(message_data[1])
-        msg_type = msgpack.unpackb(message_data[2])
-        msg_body = msgpack.unpackb(message_data[3])
-
-        return cls(destination, sender, msg_type, msg_body)
+    def _pack(self):
+        msg_data = {'destination': self._destination,
+                    'sender': self._sender,
+                    'msg_type': self._message_type,
+                    'msg_body': self._message_body}
+        return msgpack.packb(ujson.dumps(msg_data))
