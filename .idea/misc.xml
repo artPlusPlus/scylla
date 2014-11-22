@@ -3,6 +3,6 @@
   <component name="ProjectKey">
     <option name="state" value="https://github.com/artPlusPlus/Scylla.git" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 2.7.5 virtualenv at C:\dev\python_ve\scylla" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="scylla_ve" project-jdk-type="Python SDK" />
 </project>
 
