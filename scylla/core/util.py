@@ -1,4 +1,5 @@
 import time
+import socket
 from threading import Thread
 
 import zmq
@@ -13,61 +14,62 @@ _PUB_SOCKETS = {}
 _REQ_SOCKETS = {}
 
 
-def publish(msg_target, msg_source, msg_type, msg_body,
-            host='localhost', port=None):
+def publish(msg_target, msg_source, msg_type, msg_body, host=None, port=None):
     global _PUB_SOCKETS
 
+    host = host or get_host_ip()
     if not port:
         port = DEFAULT_MSG_PUB_PORT if msg_target else DEFAULT_GLB_PUB_PORT
 
     address = 'tcp://{0}:{1}'.format(host, port)
     try:
-        socket = _PUB_SOCKETS[address]
+        _socket = _PUB_SOCKETS[address]
     except KeyError:
         context = zmq.Context.instance()
-        socket = context.socket(zmq.PUB)
-        socket.setsockopt(zmq.LINGER, 1000)
-        socket.connect(address)
-        _PUB_SOCKETS[address] = socket
+        _socket = context.socket(zmq.PUB)
+        _socket.setsockopt(zmq.LINGER, 1000)
+        _socket.connect(address)
+        _PUB_SOCKETS[address] = _socket
 
     envelope = SimpleEnvelope(msg_target, msg_source, msg_type, msg_body)
     envelope = envelope.seal(msg_target if msg_target else msg_type)
 
     # print 'pub', port, msg_type
-    socket.send_multipart(envelope)
+    _socket.send_multipart(envelope)
 
 
-def subscribe(destination_keys, timeout, host='localhost', port=DEFAULT_GLB_PUB_PORT):
+def subscribe(destination_keys, timeout, host=None, port=DEFAULT_GLB_PUB_PORT):
     result = []
 
+    host = host or get_host_ip()
     if isinstance(destination_keys, basestring):
         destination_keys = (destination_keys,)
 
     address = 'tcp://{0}:{1}'.format(host, port)
     context = zmq.Context.instance()
-    socket = context.socket(zmq.SUB)
-    socket.connect(address)
+    _socket = context.socket(zmq.SUB)
+    _socket.connect(address)
     for dest_key in destination_keys:
-        socket.setsockopt(zmq.SUBSCRIBE, str(dest_key))
+        _socket.setsockopt(zmq.SUBSCRIBE, str(dest_key))
 
     poller = zmq.Poller()
-    poller.register(socket, zmq.POLLIN)
+    poller.register(_socket, zmq.POLLIN)
     events = dict(poller.poll(timeout=timeout))
-    if socket in events:
-        msg_data = socket.recv_multipart()
+    if _socket in events:
+        msg_data = _socket.recv_multipart()
         try:
             envelope = get_envelope_type(msg_data[-1])
             result.append(envelope.unseal(msg_data))
         except AttributeError:
             result.append(msg_data)
 
-    socket.close()
+    _socket.close()
     return result
 
 
-def ping(node_id=None, timeout=None, port=None):
-    def pong_handler(_timeout, _port, _result):
-        envelopes = subscribe('util', _timeout, port=_port)
+def ping(node_id=None, timeout=None, host=None, port=None):
+    def pong_handler(_timeout, _host, _port, _result):
+        envelopes = subscribe('util', _timeout, host=_host, port=_port)
         envelopes = [e for e in envelopes if e.message_type == 'pong']
         if node_id:
             envelopes = [e for e in envelopes if e.sender == node_id]
@@ -77,9 +79,8 @@ def ping(node_id=None, timeout=None, port=None):
         port = DEFAULT_MSG_SUB_PORT if node_id else DEFAULT_GLB_SUB_PORT
 
     result = []
-    pong_thread = Thread(target=pong_handler, args=(timeout, port, result))
+    pong_thread = Thread(target=pong_handler, args=(timeout, host, port, result))
     pong_thread.start()
-    time.sleep(1)
     publish(node_id, 'util', 'ping', 'ping')
     pong_thread.join()
     try:
@@ -88,24 +89,25 @@ def ping(node_id=None, timeout=None, port=None):
         return None
 
 
-def request(msg_type, msg_source, msg_body,
-            host='localhost', port=DEFAULT_REQ_PORT):
+def request(msg_type, msg_source, msg_body, host=None, port=DEFAULT_REQ_PORT):
     global _REQ_SOCKETS
+
+    host = host or get_host_ip()
 
     address = 'tcp://{0}:{1}'.format(host, port)
     try:
-        socket = _REQ_SOCKETS[address]
+        _socket = _REQ_SOCKETS[address]
     except KeyError:
         context = zmq.Context.instance()
-        socket = context.socket(zmq.REQ)
-        socket.setsockopt(zmq.LINGER, 1000)
-        socket.connect(address)
-        _REQ_SOCKETS[address] = socket
+        _socket = context.socket(zmq.REQ)
+        _socket.setsockopt(zmq.LINGER, 1000)
+        _socket.connect(address)
+        _REQ_SOCKETS[address] = _socket
 
     envelope = SimpleEnvelope(address, msg_source, msg_type, msg_body)
     envelope = envelope.seal('')
-    socket.send_multipart(envelope)
-    msg_data = socket.recv_multipart()
+    _socket.send_multipart(envelope)
+    msg_data = _socket.recv_multipart()
     try:
         envelope = get_envelope_type(msg_data[-1])
         _reply = envelope.unseal(msg_data)
@@ -119,7 +121,8 @@ class reply(object):
     def request(self):
         return self._request
 
-    def __init__(self, port=DEFAULT_REQ_PORT):
+    def __init__(self, host=None, port=DEFAULT_REQ_PORT):
+        self._host = host or get_host_ip()
         self._port = port
         self._reply = None
         self._socket = None
@@ -153,9 +156,22 @@ class reply(object):
 
 def terminate():
     while len(_PUB_SOCKETS):
-        _, socket = _PUB_SOCKETS.popitem()
-        socket.close()
+        _, _socket = _PUB_SOCKETS.popitem()
+        _socket.close()
     while len(_REQ_SOCKETS):
-        _, socket = _REQ_SOCKETS.popitem()
-        socket.close()
+        _, _socket = _REQ_SOCKETS.popitem()
+        _socket.close()
     zmq.Context.instance().term()
+
+
+def get_host_ip():
+    try:
+        return socket.gethostbyname(socket.getfqdn())
+    except socket.gaierror:
+        return socket.gethostbyname(socket.gethostname())
+
+
+def get_host_name(full=False):
+    if full:
+        return socket.getfqdn()
+    return socket.gethostname()

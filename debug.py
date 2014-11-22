@@ -109,9 +109,9 @@ def _test_broker():
 
 
 def _main():
-    # print 'setting up broker'
-    # b = scylla.Broker('Broker')
-    # b.start()
+    print 'setting up broker'
+    b = scylla.Broker('Broker')
+    b.start()
 
     print 'setting up subscriber'
     s = scylla.Node('SUBSCRIBER')
@@ -133,9 +133,9 @@ def _main():
     scylla.publish(str(s.id), 'debug', 'stop', 'stop')
     s.join()
 
-    # print 'killing broker'
-    # scylla.publish(str(b.id), 'debug', 'stop', 'stop')
-    # b.join()
+    print 'killing broker'
+    scylla.publish(str(b.id), 'debug', 'stop', 'stop')
+    b.join()
 
     print 'Cleaning up'
     scylla.terminate()
