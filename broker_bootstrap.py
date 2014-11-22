@@ -19,6 +19,6 @@ if __name__ == '__main__':
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('-n', '--name', help='The name for the Broker')
 
-    arg_parser.parse_args()
+    args = arg_parser.parse_args()
 
-    _main(arg_parser.name)
+    _main(args.name)
