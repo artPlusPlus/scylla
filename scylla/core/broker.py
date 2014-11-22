@@ -18,60 +18,26 @@ class Broker(Node):
             global_stream_port=global_stream_port)
 
         self._proxy_direct_pub_port = proxy_direct_pub_port
-        self._proxy_direct_pub = None
-
         self._proxy_direct_sub_port = proxy_direct_sub_port
-        self._proxy_direct_sub = None
+        self._proxy_direct = None
 
         self._proxy_global_pub_port = proxy_global_pub_port
-        self._proxy_global_pub = None
-
         self._proxy_global_sub_port = proxy_global_sub_port
-        self._proxy_global_sub = None
+        self._proxy_global = None
 
     def _setup(self):
         super(Broker, self)._setup()
 
-        self._proxy_direct_pub = self._context.socket(zmq.XPUB)
-        # print '[{0}]'.format(self.id), 'binding direct xpub', self._proxy_direct_pub_port
-        self._proxy_direct_pub.bind(
-            'tcp://*:{0}'.format(self._proxy_direct_pub_port))
-        self._register_socket(self._proxy_direct_pub, zmq.POLLIN,
-                              self._broker_direct_pub)
-
-        self._proxy_direct_sub = self._context.socket(zmq.XSUB)
-        # print '[{0}]'.format(self.id), 'binding direct xsub', self._proxy_direct_sub_port
-        self._proxy_direct_sub.bind(
+        self._proxy_direct = zmq.devices.ProcessDevice(zmq.QUEUE, zmq.XSUB, zmq.XPUB)
+        self._proxy_direct.bind_in(
             'tcp://*:{0}'.format(self._proxy_direct_sub_port))
-        self._register_socket(self._proxy_direct_sub, zmq.POLLIN,
-                              self._broker_direct_sub)
+        self._proxy_direct.bind_out(
+            'tcp://*:{0}'.format(self._proxy_direct_pub_port))
+        self._proxy_direct.start()
 
-        self._proxy_global_pub = self._context.socket(zmq.XPUB)
-        # print '[{0}]'.format(self.id), 'binding global xpub', self._proxy_global_pub_port
-        self._proxy_global_pub.bind(
-            'tcp://*:{0}'.format(self._proxy_global_pub_port))
-        self._register_socket(self._proxy_global_pub, zmq.POLLIN,
-                              self._broker_global_pub)
-
-        self._proxy_global_sub = self._context.socket(zmq.XSUB)
-        # print '[{0}]'.format(self.id), 'binding global xsub', self._proxy_global_sub_port
-        self._proxy_global_sub.bind(
+        self._proxy_global = zmq.devices.ProcessDevice(zmq.QUEUE, zmq.XSUB, zmq.XPUB)
+        self._proxy_global.bind_in(
             'tcp://*:{0}'.format(self._proxy_global_sub_port))
-        self._register_socket(self._proxy_global_sub, zmq.POLLIN,
-                              self._broker_global_sub)
-
-    def _broker_direct_pub(self, msg_data):
-        # print '[{0}]'.format(self.id), 'direct pub', msg_data
-        self._proxy_direct_sub.send_multipart(msg_data)
-
-    def _broker_direct_sub(self, msg_data):
-        # print '[{0}]'.format(self.id), 'direct sub', msg_data
-        self._proxy_direct_pub.send_multipart(msg_data)
-
-    def _broker_global_pub(self, msg_data):
-        # print '[{0}]'.format(self.id), 'global pub', msg_data
-        self._proxy_global_sub.send_multipart(msg_data)
-
-    def _broker_global_sub(self, msg_data):
-        # print '[{0}]'.format(self.id), 'global sub', msg_data
-        self._proxy_global_pub.send_multipart(msg_data)
+        self._proxy_global.bind_out(
+            'tcp://*:{0}'.format(self._proxy_global_pub_port))
+        self._proxy_global.start()

@@ -24,7 +24,6 @@ def publish(msg_target, msg_source, msg_type, msg_body,
     try:
         socket = _PUB_SOCKETS[address]
     except KeyError:
-        print 'creating pub socket:', address
         context = zmq.Context.instance()
         socket = context.socket(zmq.PUB)
         socket.setsockopt(zmq.LINGER, 1000)
@@ -109,7 +108,7 @@ def request(msg_type, msg_source, msg_body,
     msg_data = socket.recv_multipart()
     try:
         envelope = get_envelope_type(msg_data[-1])
-        _reply = envelope.expand(msg_data)
+        _reply = envelope.unseal(msg_data)
     except AttributeError:
         _reply = msg_data
     return _reply

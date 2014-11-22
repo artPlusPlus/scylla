@@ -13,7 +13,7 @@ def _task_handler(envelope):
 def _test_pub(target_subscriber, *msg_types):
     with scylla.reply() as r:
         if r.request.message_body == 'start':
-            r.reply('_test_pub', 'starting', 'sending updates to {0}'.format(target_subscriber))
+            r.reply('_test_pub', 'starting', 'sending tasks to {0}'.format(target_subscriber))
 
     for i in xrange(0, 100):
         # print 'sending {0}'.format(i)
@@ -112,23 +112,22 @@ def _main():
     print 'setting up broker'
     b = scylla.Broker('Broker')
     b.start()
-    while not scylla.ping(node_id=b.id, timeout=10 * 1000):
-        pass
 
     print 'setting up subscriber'
     s = scylla.Node('SUBSCRIBER')
     s.register_direct_message_handler('TASK', _task_handler)
     s.start()
-    while not scylla.ping(node_id=s.id, timeout=1000):
-        pass
 
     print 'setting up publisher'
     p = threading.Thread(target=_test_pub, args=[s.id, 'TASK'])
     p.start()
 
-    print 'requesting updates'
-    scylla.request('request', 'debug', 'start')
-    time.sleep(5)
+    print 'requesting tasks'
+    print scylla.request('request', 'debug', 'start').message_body
+
+    print 'waiting for work to complete'
+    time.sleep(3)
+    print 'work complete'
 
     print 'killing subscriber'
     scylla.publish(str(s.id), 'debug', 'stop', 'stop')

@@ -6,7 +6,7 @@ import zmq
 
 from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT, DEFAULT_REQ_PORT
 from .base_envelope import get_envelope_type
-from .util import publish, terminate
+from .util import publish, terminate, ping
 
 
 class Node(Process):
@@ -24,8 +24,14 @@ class Node(Process):
             return socket.gethostbyname(host_name)
 
     @property
-    def _connnected(self):
+    def _online(self):
         return all([self._direct_connection, self._global_connection])
+
+    @property
+    def online(self):
+        if ping(node_id=self.id, timeout=1 * 1000):
+            return True
+        return False
 
     def __init__(self, name,
                  direct_message_port=DEFAULT_MSG_SUB_PORT,
@@ -51,6 +57,12 @@ class Node(Process):
         self._direct_message_handlers = {}
         self._global_message_handlers = {}
 
+    def start(self):
+        super(Node, self).start()
+
+        while not self.online:
+            time.sleep(0.1)
+
     def run(self):
         self._run = True
         self._setup()
@@ -65,7 +77,7 @@ class Node(Process):
         # Register basic direct message handlers
         self.register_direct_message_handler('prime_direct', self._received_direct_primer)
         self.register_direct_message_handler('stop', self._received_stop)
-        self.register_direct_message_handler('ping', self._received_direct_ping)
+        self.register_direct_message_handler('ping', self._received_ping)
 
         # The direct message stream only receives messages addressed to this node
         self._direct_stream = self._context.socket(zmq.SUB)
@@ -76,7 +88,7 @@ class Node(Process):
 
         # Register basic global message handlers
         self.register_global_message_handler('prime_global', self._received_global_primer)
-        self.register_global_message_handler('ping', self._received_global_ping)
+        self.register_global_message_handler('ping', self._received_ping)
 
         # The global message stream receives messages based on handled types
         self._global_stream = self._context.socket(zmq.SUB)
@@ -159,6 +171,7 @@ class Node(Process):
 
     def _received_stop(self, envelope):
         publish(None, self.id, 'stopping', 'stopping')
+        print '[{0}] STOPPING'.format(self.id)
         self._run = False
 
     def _received_direct_primer(self, envelope):
@@ -171,18 +184,11 @@ class Node(Process):
     def _received_global_primer(self, envelope):
         if envelope.sender == self.id:
             self._global_connection = True
-            if self._global_connection:
+            if self._direct_connection:
                 publish(None, self.id, 'online', 'online')
                 print '[{0}] ONLINE'.format(self.id)
 
-    def _received_direct_ping(self, envelope):
-        if not self._connnected:
+    def _received_ping(self, envelope):
+        if not self._online:
             return
-        # print '{0} received direct ping from {1}'.format(self.id, envelope.sender)
-        publish(envelope.sender, self.id, 'pong', 'tcp://{0}:{1}'.format(self.host_ip, self._direct_port))
-
-    def _received_global_ping(self, envelope):
-        if not self._connnected:
-            return
-        # print '{0} received global ping from {1}'.format(self.id, envelope.sender)
         publish(envelope.sender, self.id, 'pong', 'tcp://{0}:{1}'.format(self.host_ip, self._direct_port))

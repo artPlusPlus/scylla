@@ -9,7 +9,6 @@ _ENVELOPE_REGISTRY = weakref.WeakValueDictionary()
 class _MetaEnvelope(type):
     def __new__(cls, clsname, bases, dct):
         global _ENVELOPE_REGISTRY
-        print 'REGISTERING ENVELOPE:', clsname
         new_cls = super(_MetaEnvelope, cls).__new__(cls, clsname, bases, dct)
         _ENVELOPE_REGISTRY[clsname] = new_cls
         return new_cls
