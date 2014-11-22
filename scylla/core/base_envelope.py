@@ -1,5 +1,4 @@
 import weakref
-import ujson
 import msgpack
 
 
@@ -33,8 +32,8 @@ class BaseEnvelope(object):
 
     @classmethod
     def unseal(cls, envelope_data):
-        msg_data = msgpack.unpackb(envelope_data[1])
-        return cls(**ujson.loads(msg_data))
+        msg_data = msgpack.loads(envelope_data[1])
+        return cls(**msg_data)
 
 
 def get_envelope_type(envelope_name):

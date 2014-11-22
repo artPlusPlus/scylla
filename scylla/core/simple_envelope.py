@@ -1,5 +1,4 @@
 import msgpack
-import ujson
 
 from .base_envelope import BaseEnvelope
 
@@ -34,4 +33,4 @@ class SimpleEnvelope(BaseEnvelope):
                     'sender': self._sender,
                     'msg_type': self._message_type,
                     'msg_body': self._message_body}
-        return msgpack.packb(ujson.dumps(msg_data))
+        return msgpack.dumps(msg_data)
