@@ -34,7 +34,7 @@ def publish(msg_target, msg_source, msg_type, msg_body, host=None, port=None):
     envelope = SimpleEnvelope(msg_target, msg_source, msg_type, msg_body)
     envelope = envelope.seal(msg_target if msg_target else msg_type)
 
-    # print 'pub', port, msg_type
+    # print 'pub', host, port, msg_type, msg_body
     _socket.send_multipart(envelope)
 
 
@@ -45,6 +45,7 @@ def subscribe(destination_keys, timeout, host=None, port=DEFAULT_GLB_PUB_PORT):
     if isinstance(destination_keys, basestring):
         destination_keys = (destination_keys,)
 
+    # print 'sub', host, port, destination_keys
     address = 'tcp://{0}:{1}'.format(host, port)
     context = zmq.Context.instance()
     _socket = context.socket(zmq.SUB)
@@ -63,6 +64,7 @@ def subscribe(destination_keys, timeout, host=None, port=DEFAULT_GLB_PUB_PORT):
         except AttributeError:
             result.append(msg_data)
 
+    # print 'closing sub'
     _socket.close()
     return result
 
@@ -75,13 +77,20 @@ def ping(node_id=None, timeout=None, host=None, port=None):
             envelopes = [e for e in envelopes if e.sender == node_id]
         _result.extend(envelopes)
 
+    host = host or get_host_ip()
+
     if not port:
         port = DEFAULT_MSG_SUB_PORT if node_id else DEFAULT_GLB_SUB_PORT
 
     result = []
     pong_thread = Thread(target=pong_handler, args=(timeout, host, port, result))
     pong_thread.start()
-    publish(node_id, 'util', 'ping', 'ping')
+    start = time.time()
+    while not result:
+        if timeout and time.time() - start > timeout:
+            break
+        publish(node_id, 'util', 'ping', 'ping', host=host)
+        time.sleep(0.01)
     pong_thread.join()
     try:
         return result[0]

@@ -18,16 +18,16 @@ class Node(Process):
 
     @property
     def online(self):
-        if ping(node_id=self.id, timeout=1 * 1000):
+        if ping(node_id=self.id, timeout=1 * 1000, host=self._broker_address):
             return True
         return False
 
-    def __init__(self, name, directory_address=None,
+    def __init__(self, name, broker_address=None,
                  direct_message_port=DEFAULT_MSG_SUB_PORT,
                  global_stream_port=DEFAULT_GLB_SUB_PORT):
         super(Node, self).__init__(name=name)
 
-        self._directory_address = directory_address or get_host_ip()
+        self._broker_address = broker_address or get_host_ip()
 
         self._run = True
         self._context = None
@@ -72,7 +72,7 @@ class Node(Process):
         # The direct message stream only receives messages addressed to this node
         self._direct_stream = self._context.socket(zmq.SUB)
         # print '[{0}]'.format(self.id), 'connecting direct sub', self._direct_port
-        self._direct_stream.connect('tcp://{0}:{1}'.format(self._directory_address, self._direct_port))
+        self._direct_stream.connect('tcp://{0}:{1}'.format(self._broker_address, self._direct_port))
         self._direct_stream.setsockopt(zmq.SUBSCRIBE, str(self.id))
         self._register_socket(self._direct_stream, zmq.POLLIN, self._process_direct_message)
 
@@ -83,7 +83,7 @@ class Node(Process):
         # The global message stream receives messages based on handled types
         self._global_stream = self._context.socket(zmq.SUB)
         # print '[{0}]'.format(self.id), 'connecting global sub', self._global_port
-        self._global_stream.connect('tcp://{0}:{1}'.format(self._directory_address, self._global_port))
+        self._global_stream.connect('tcp://{0}:{1}'.format(self._broker_address, self._global_port))
         for message_type in self._global_message_handlers:
             self._global_stream.setsockopt(zmq.SUBSCRIBE, str(message_type))
         self._register_socket(self._global_stream, zmq.POLLIN, self._process_global_message)
@@ -98,15 +98,15 @@ class Node(Process):
                     handler(envelope_data)
             if not self._direct_connection:
                 # print '[{0}] priming direct connection'.format(self.id)
-                publish(self.id, self.id, 'prime_direct', 'prime_direct', host=self._directory_address)
+                publish(self.id, self.id, 'prime_direct', 'prime_direct', host=self._broker_address)
             if not self._global_connection:
                 # print '[{0}] priming global connection'.format(self.id)
-                publish(None, self.id, 'prime_global', 'prime_global', host=self._directory_address)
+                publish(None, self.id, 'prime_global', 'prime_global', host=self._broker_address)
 
     def _teardown(self):
         for _socket, _ in self._socket_handlers:
             _socket.close(linger=1000)
-        publish(None, self.id, 'offline', 'offline', host=self._directory_address)
+        publish(None, self.id, 'offline', 'offline', host=self._broker_address)
         terminate()
 
     def register_direct_message_handler(self, message_type, handler):
@@ -160,7 +160,7 @@ class Node(Process):
         handler(envelope)
 
     def _received_stop(self, envelope):
-        publish(None, self.id, 'stopping', 'stopping', host=self._directory_address)
+        publish(None, self.id, 'stopping', 'stopping', host=self._broker_address)
         print '[{0}] STOPPING'.format(self.id)
         self._run = False
 
@@ -168,19 +168,20 @@ class Node(Process):
         if envelope.sender == self.id:
             self._direct_connection = True
             if self._global_connection:
-                publish(None, self.id, 'online', 'online', host=self._directory_address)
+                publish(None, self.id, 'online', 'online', host=self._broker_address)
                 print '[{0}] ONLINE'.format(self.id)
 
     def _received_global_primer(self, envelope):
         if envelope.sender == self.id:
             self._global_connection = True
             if self._direct_connection:
-                publish(None, self.id, 'online', 'online')
+                publish(None, self.id, 'online', 'online', host=self._broker_address)
                 print '[{0}] ONLINE'.format(self.id)
 
     def _received_ping(self, envelope):
         if not self._online:
             return
+        print '[{0}] received ping from {1}'.format(self.id, envelope.sender)
         publish(envelope.sender, self.id, 'pong',
                 'tcp://{0}:{1}'.format(get_host_ip(), self._direct_port),
-                host=self._directory_address)
+                host=self._broker_address)
