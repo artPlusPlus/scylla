@@ -1,5 +1,4 @@
 import time
-import uuid
 from threading import Thread
 from multiprocessing import Process, Pipe
 
@@ -11,7 +10,7 @@ from zmq.eventloop.ioloop import ZMQIOLoop, PeriodicCallback
 from . import DEFAULT_DISCOVERY_PORT, NODE_MSG_PORT_START
 from ._udp import UDPSocket
 from .peer import Peer
-from .util import terminate, get_host_name, get_host_ip
+from .util import get_host_name, get_host_ip
 
 
 class Node(object):
@@ -23,27 +22,38 @@ class Node(object):
     def id(self):
         return '{0}:{1}'.format(get_host_name().lower(), self.name.lower())
 
+    @property
+    def host_name(self):
+        return get_host_name()
+
+    @property
+    def host_ip(self):
+        return get_host_ip()
+
+    @property
+    def direct_port(self):
+        return self._direct_port
+
     def __init__(self, name, port=None,
                  beacon_port=DEFAULT_DISCOVERY_PORT, beacon_rate=1.0):
         super(Node, self).__init__()
 
         self._name = name
+        self._context = None
         self._loop = None
         self._peers = {}
+
+        self._cnc_proxy_id = None
+        self._cnc_cmd_socket = None
+        self._cnc_result_port = None
+        self._cnc_result_socket = None
+        self._container = None
 
         self._beacon_port = beacon_port
         self._beacon_socket = None
         self._beacon_rate = beacon_rate
         self._next_beacon = time.time()
         self._beacon_callbacks = []
-
-        self._cnc_key = uuid.uuid1()
-        self._cnc_type = None
-        self._cnc_frontend = None
-        self._cnc_backend = None
-        self._cnc_backend_stream = None
-        self._container = None
-        self._cnc_handlers = {}
 
         self._user_port = port is not None
         self._direct_port = port or NODE_MSG_PORT_START
@@ -52,51 +62,35 @@ class Node(object):
         self._direct_handlers = {}  # TODO: weakref.WeakValueDictionary()
 
     def start(self, thread=False, process=False):
-        if thread:
-            self._cnc_type = zmq.PAIR
+        if thread or process:
             _p1, _p2 = Pipe()
-            self._container = Thread(name=self.id, target=self._start, args=(_p2,))
-            self._container.start()
-            self._cnc_frontend = zmq.Context.instance().socket(self._cnc_type)
-            cnc_address = 'inproc://{}'.format(self._cnc_key)
-            self._cnc_frontend.bind(cnc_address)
-            _p1.send(cnc_address)
-        elif process:
-            self._cnc_type = zmq.DEALER
-            _p1, _p2 = Pipe()
-            self._container = Process(name=self.id, target=self._start, args=(_p2,))
-            self._container.start()
-            self._cnc_frontend = zmq.Context.instance().socket(self._cnc_type)
-            cnc_address = self._direct_port + 1
-            while True:
-                try:
-                    self._cnc_frontend.bind('tcp://*:{}'.format(cnc_address))
-                except zmq.ZMQError:
-                    cnc_address += 1
-                else:
-                    break
-            _p1.send('tcp://localhost:{}'.format(cnc_address))
+            self._cnc_proxy_id = '{0}_CNC'.format(self.id)
+            if thread:
+                self._container = Thread(name=self.id, target=self._start,
+                                         args=(_p2, zmq.Context()))
+                self._container.start()
+            elif process:
+                self._container = Process(name=self.id, target=self._start,
+                                          args=(_p2, zmq.Context()))
+                self._container.start()
+            self._direct_port = _p1.recv()
+            self._cnc_cmd_socket = zmq.Context.instance().socket(zmq.DEALER)
+            self._cnc_cmd_socket.connect('tcp://localhost:{}'.format(self._direct_port))
+            self._cnc_result_socket = zmq.Context.instance().socket(zmq.DEALER)
+            self._cnc_result_port = self._cnc_result_socket.bind_to_random_port(
+                'tcp://*', min_port=int(self._direct_port))
         else:
-            self._start(None)
+            self._start(None, None)
 
-    def _start(self, cnc_address_pipe):
-        self._setup(cnc_address_pipe)
+    def _start(self, cnc_address_pipe, context):
+        self._setup(cnc_address_pipe, context)
         self._main()
         self._teardown()
 
-    def _setup(self, cnc_address_pipe):
+    def _setup(self, cnc_address_pipe, context):
         print '[{0}] setting up'.format(self.id)
+        self._context = context or zmq.Context.instance()
         self._loop = ZMQIOLoop()
-        context = zmq.Context.instance()
-
-        # Command and Control
-        if cnc_address_pipe:
-            self._cnc_backend = context.socket(self._cnc_type)
-            self._cnc_backend.connect(cnc_address_pipe.recv())
-            self._cnc_backend_stream = ZMQStream(self._cnc_backend,
-                                                 io_loop=self._loop)
-            self._cnc_backend_stream.on_recv(self._receive_cnc_message)
-            self.on_recv_cmd('stop', self._stop)
 
         # Beacon Messages
         self._beacon_socket = UDPSocket(port=self._beacon_port)
@@ -111,22 +105,18 @@ class Node(object):
         self._beacon_callbacks.append(cb)
 
         # Direct Messages
-        self._direct_socket = context.socket(zmq.ROUTER)
-        while True:
-            try:
-                self._direct_socket.bind('tcp://*:{}'.format(self._direct_port))
-            except zmq.ZMQError:
-                if self._user_port:
-                    raise
-                else:
-                    self._direct_port += 1
-            else:
-                break
+        self._direct_socket = self._context.socket(zmq.ROUTER)
+        self._direct_port = self._direct_socket.bind_to_random_port(
+            'tcp://*', min_port=int(self._direct_port))
         self._direct_stream = ZMQStream(self._direct_socket, io_loop=self._loop)
         self._direct_stream.on_recv(self._receive_direct_message)
         self.on_recv_direct('stop', self._handle_stop)
         self.on_recv_direct('ping', self._handle_ping)
         self.on_recv_direct('pong', self._handle_pong)
+
+        # Command and Control
+        if cnc_address_pipe:
+            cnc_address_pipe.send(str(self._direct_port))
 
     def _main(self):
         print '[{0}] running'.format(self.id)
@@ -138,21 +128,14 @@ class Node(object):
         print '[{0}] stopping'.format(self.id)
         for peer_id in self._peers.keys():
             self._remove_peer(peer_id)
-        for s in [self._direct_socket, self._cnc_frontend, self._cnc_backend]:
+        for s in [self._direct_socket]:
             try:
                 s.close(linger=1000)
             except AttributeError:
                 pass
-        if self._cnc_type == zmq.DEALER:
-            terminate()
+        if self._context is not zmq.Context.instance():
+            self._context.term()
         print '[{0}] offline'.format(self.id)
-
-    def on_recv_cmd(self, cmd, handler):
-        if cmd in self._cnc_handlers:
-            msg = '{0} already handled by {1}'.format(
-                cmd, self._cnc_handlers[cmd])
-            raise ValueError(msg)
-        self._cnc_handlers[cmd] = handler
 
     def on_recv_direct(self, message_type, handler):
         if message_type in self._direct_handlers:
@@ -171,7 +154,10 @@ class Node(object):
 
     def _cull_peers(self):
         for peer in self._peers.values():
+            if peer.id == self._cnc_proxy_id:
+                continue
             if peer.expired:
+                print '[{0}] culling peer:'.format(self.id), peer.id
                 self._remove_peer(peer.id)
 
     def _process_message(self, raw_message):
@@ -187,20 +173,6 @@ class Node(object):
             peer = self._add_peer(host_id, host_address, host_port)
 
         return peer, message['type'], message['body']
-
-    def _receive_cnc_message(self, message):
-        cmd, args, kwargs = msgpack.loads(message[0])
-        try:
-            handler = self._cnc_handlers[cmd]
-        except KeyError:
-            print '[{0}] DROPPED COMMAND - NO HANDLER: {1}'.format(self.id, cmd)
-            return
-        result = handler(*args, **kwargs)
-        if self._cnc_backend:
-            if not self._cnc_backend.closed:
-                self._cnc_backend.send(msgpack.dumps(result))
-        else:
-            return result
 
     def _receive_beacon_message(self, fd, event):
         message = self._beacon_socket.receive()
@@ -240,12 +212,13 @@ class Node(object):
         self._loop.stop()
 
     def stop(self):
-        if self._cnc_frontend:
-            if not self._cnc_frontend.closed:
-                cmd = ('stop', [], {})
-                self._cnc_frontend.send(msgpack.dumps(cmd))
+        if self._cnc_cmd_socket:
+            if not self._cnc_cmd_socket.closed:
+                cmd = self._construct_cmd('stop')
+                self._cnc_cmd_socket.send(msgpack.dumps(cmd))
                 self._container.join()
-                self._cnc_frontend.close(linger=1000)
+                self._cnc_cmd_socket.close(linger=1000)
+                self._cnc_result_socket.close(linger=1000)
         else:
             self._stop()
 
@@ -255,8 +228,17 @@ class Node(object):
         except AttributeError:
             pass
 
-    def _add_peer(self, peer_id, peer_host, peer_socket):
-        peer = Peer(peer_id, peer_host, peer_socket)
+    def __call__(self, cmd, *args, **kwargs):
+        if self._cnc_cmd_socket:
+            if not self._cnc_cmd_socket.closed:
+                cmd = self._construct_cmd(cmd, *args, **kwargs)
+                self._cnc_cmd_socket.send(msgpack.dumps(cmd))
+                result = self._cnc_result_socket.recv()
+                return result
+        raise RuntimeError('Unable to process command. {0} is not running.'.format(self.name))
+
+    def _add_peer(self, peer_id, peer_host, peer_port):
+        peer = Peer(peer_id, peer_host, peer_port, self._context)
         self._peers[peer.id] = peer
         return peer
 
@@ -284,3 +266,15 @@ class Node(object):
                'host': (self.id, get_host_ip(), str(self._direct_port)),
                'body': {'msg_types': self._direct_handlers.keys()}}
         return msg
+
+    def _construct_stop_msg(self):
+        msg = {'type': 'stop',
+               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'body': {}}
+        return msg
+
+    def _construct_cmd(self, cmd, *args, **kwargs):
+        cmd = {'type': cmd,
+               'host': (self._cnc_proxy_id, get_host_ip(), str(self._cnc_result_port)),
+               'body': {'args': args, 'kwargs': kwargs}}
+        return cmd

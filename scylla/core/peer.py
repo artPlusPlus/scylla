@@ -27,7 +27,7 @@ class Peer(object):
     def duration(self, value):
         self._duration = value
 
-    def __init__(self, id, host, port, duration=10.0):
+    def __init__(self, id, host, port, context, duration=10.0):
         super(Peer, self).__init__()
 
         self._id = id
@@ -35,7 +35,7 @@ class Peer(object):
         self._port = port
         self._duration = duration
         self._expires_at = 0
-        self._input = zmq.Context.instance().socket(zmq.DEALER)
+        self._input = context.socket(zmq.DEALER)
         self._input.connect('tcp://{0}:{1}'.format(self._host, self._port))
 
         self.touch()
