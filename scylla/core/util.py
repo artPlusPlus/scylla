@@ -6,8 +6,6 @@ import zmq
 
 from . import DEFAULT_MSG_PUB_PORT, DEFAULT_GLB_PUB_PORT, DEFAULT_REQ_PORT
 from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT
-from .base_envelope import get_envelope_type
-from .simple_envelope import SimpleEnvelope
 
 
 _PUB_SOCKETS = {}

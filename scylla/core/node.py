@@ -1,187 +1,286 @@
-from multiprocessing import Process
+import time
+import uuid
+from threading import Thread
+from multiprocessing import Process, Pipe
 
+import msgpack
 import zmq
+from zmq.eventloop.zmqstream import ZMQStream
+from zmq.eventloop.ioloop import ZMQIOLoop, PeriodicCallback
 
-from . import DEFAULT_MSG_SUB_PORT, DEFAULT_GLB_SUB_PORT, DEFAULT_REQ_PORT
-from .base_envelope import get_envelope_type
-from .util import publish, terminate, ping, get_host_name, get_host_ip
+from . import DEFAULT_DISCOVERY_PORT, NODE_MSG_PORT_START
+from ._udp import UDPSocket
+from .peer import Peer
+from .util import terminate, get_host_name, get_host_ip
 
 
-class Node(Process):
+class Node(object):
+    @property
+    def name(self):
+        return self._name
+
     @property
     def id(self):
-        return '{0}.{1}'.format(get_host_name(), self.name)
+        return '{0}:{1}'.format(get_host_name().lower(), self.name.lower())
 
-    @property
-    def _online(self):
-        return all([self._direct_connection, self._global_connection])
+    def __init__(self, name, port=None,
+                 beacon_port=DEFAULT_DISCOVERY_PORT, beacon_rate=1.0):
+        super(Node, self).__init__()
 
-    @property
-    def online(self):
-        if ping(node_id=self.id, timeout=1 * 1000, host=self._broker_address):
-            return True
-        return False
+        self._name = name
+        self._loop = None
+        self._peers = {}
 
-    def __init__(self, name, broker_address=None,
-                 direct_message_port=DEFAULT_MSG_SUB_PORT,
-                 global_stream_port=DEFAULT_GLB_SUB_PORT):
-        super(Node, self).__init__(name=name)
+        self._beacon_port = beacon_port
+        self._beacon_socket = None
+        self._beacon_rate = beacon_rate
+        self._next_beacon = time.time()
+        self._beacon_callbacks = []
 
-        self._broker_address = broker_address or get_host_ip()
+        self._cnc_key = uuid.uuid1()
+        self._cnc_type = None
+        self._cnc_frontend = None
+        self._cnc_backend = None
+        self._cnc_backend_stream = None
+        self._container = None
+        self._cnc_handlers = {}
 
-        self._run = True
-        self._context = None
-        self._poller = None
-        self._socket_handlers = None
-
-        self._direct_connection = False
-        self._direct_port = direct_message_port
+        self._user_port = port is not None
+        self._direct_port = port or NODE_MSG_PORT_START
+        self._direct_socket = None
         self._direct_stream = None
+        self._direct_handlers = {}  # TODO: weakref.WeakValueDictionary()
 
-        self._global_connection = False
-        self._global_port = global_stream_port
-        self._global_stream = None
+    def start(self, thread=False, process=False):
+        if thread:
+            self._cnc_type = zmq.PAIR
+            _p1, _p2 = Pipe()
+            self._container = Thread(name=self.id, target=self._start, args=(_p2,))
+            self._container.start()
+            self._cnc_frontend = zmq.Context.instance().socket(self._cnc_type)
+            cnc_address = 'inproc://{}'.format(self._cnc_key)
+            self._cnc_frontend.bind(cnc_address)
+            _p1.send(cnc_address)
+        elif process:
+            self._cnc_type = zmq.DEALER
+            _p1, _p2 = Pipe()
+            self._container = Process(name=self.id, target=self._start, args=(_p2,))
+            self._container.start()
+            self._cnc_frontend = zmq.Context.instance().socket(self._cnc_type)
+            cnc_address = self._direct_port + 1
+            while True:
+                try:
+                    self._cnc_frontend.bind('tcp://*:{}'.format(cnc_address))
+                except zmq.ZMQError:
+                    cnc_address += 1
+                else:
+                    break
+            _p1.send('tcp://localhost:{}'.format(cnc_address))
+        else:
+            self._start(None)
 
-        # TODO: weakref.WeakValueDictionary()
-        self._direct_message_handlers = {}
-        self._global_message_handlers = {}
-
-    def start(self):
-        super(Node, self).start()
-
-        # Wait for node to come online before continuing execution
-        while not self.online:
-            pass
-
-    def run(self):
-        self._run = True
-        self._setup()
+    def _start(self, cnc_address_pipe):
+        self._setup(cnc_address_pipe)
         self._main()
         self._teardown()
 
-    def _setup(self):
-        self._context = zmq.Context.instance()
-        self._poller = zmq.Poller()
-        self._socket_handlers = {}
+    def _setup(self, cnc_address_pipe):
+        print '[{0}] setting up'.format(self.id)
+        self._loop = ZMQIOLoop()
+        context = zmq.Context.instance()
 
-        # Register basic direct message handlers
-        self.register_direct_message_handler('prime_direct', self._received_direct_primer)
-        self.register_direct_message_handler('stop', self._received_stop)
-        self.register_direct_message_handler('ping', self._received_ping)
+        # Command and Control
+        if cnc_address_pipe:
+            self._cnc_backend = context.socket(self._cnc_type)
+            self._cnc_backend.connect(cnc_address_pipe.recv())
+            self._cnc_backend_stream = ZMQStream(self._cnc_backend,
+                                                 io_loop=self._loop)
+            self._cnc_backend_stream.on_recv(self._receive_cnc_message)
+            self.on_recv_cmd('stop', self._stop)
 
-        # The direct message stream only receives messages addressed to this node
-        self._direct_stream = self._context.socket(zmq.SUB)
-        # print '[{0}]'.format(self.id), 'connecting direct sub', self._direct_port
-        self._direct_stream.connect('tcp://{0}:{1}'.format(self._broker_address, self._direct_port))
-        self._direct_stream.setsockopt(zmq.SUBSCRIBE, str(self.id))
-        self._register_socket(self._direct_stream, zmq.POLLIN, self._process_direct_message)
+        # Beacon Messages
+        self._beacon_socket = UDPSocket(port=self._beacon_port)
+        self._loop.add_handler(self._beacon_socket.fileno,
+                               self._receive_beacon_message,
+                               self._loop.READ)
+        cb = PeriodicCallback(self._emit_beacon, self._beacon_rate * 1000,
+                              io_loop=self._loop)
+        self._beacon_callbacks.append(cb)
+        cb = PeriodicCallback(self._cull_peers, self._beacon_rate * 2000,
+                              io_loop=self._loop)
+        self._beacon_callbacks.append(cb)
 
-        # Register basic global message handlers
-        self.register_global_message_handler('prime_global', self._received_global_primer)
-        self.register_global_message_handler('ping', self._received_ping)
-
-        # The global message stream receives messages based on handled types
-        self._global_stream = self._context.socket(zmq.SUB)
-        # print '[{0}]'.format(self.id), 'connecting global sub', self._global_port
-        self._global_stream.connect('tcp://{0}:{1}'.format(self._broker_address, self._global_port))
-        for message_type in self._global_message_handlers:
-            self._global_stream.setsockopt(zmq.SUBSCRIBE, str(message_type))
-        self._register_socket(self._global_stream, zmq.POLLIN, self._process_global_message)
+        # Direct Messages
+        self._direct_socket = context.socket(zmq.ROUTER)
+        while True:
+            try:
+                self._direct_socket.bind('tcp://*:{}'.format(self._direct_port))
+            except zmq.ZMQError:
+                if self._user_port:
+                    raise
+                else:
+                    self._direct_port += 1
+            else:
+                break
+        self._direct_stream = ZMQStream(self._direct_socket, io_loop=self._loop)
+        self._direct_stream.on_recv(self._receive_direct_message)
+        self.on_recv_direct('stop', self._handle_stop)
+        self.on_recv_direct('ping', self._handle_ping)
+        self.on_recv_direct('pong', self._handle_pong)
 
     def _main(self):
-        while self._run:
-            events = dict(self._poller.poll(timeout=1000))
-            for _socket, event_mask in self._socket_handlers:
-                if events.get(_socket) == event_mask:
-                    handler = self._socket_handlers[(_socket, event_mask)]
-                    envelope_data = _socket.recv_multipart()
-                    handler(envelope_data)
-            if not self._direct_connection:
-                # print '[{0}] priming direct connection'.format(self.id)
-                publish(self.id, self.id, 'prime_direct', 'prime_direct', host=self._broker_address)
-            if not self._global_connection:
-                # print '[{0}] priming global connection'.format(self.id)
-                publish(None, self.id, 'prime_global', 'prime_global', host=self._broker_address)
+        print '[{0}] running'.format(self.id)
+        for bcb in self._beacon_callbacks:
+            bcb.start()
+        self._loop.start()
 
     def _teardown(self):
-        for _socket, _ in self._socket_handlers:
-            _socket.close(linger=1000)
-        publish(None, self.id, 'offline', 'offline', host=self._broker_address)
-        terminate()
+        print '[{0}] stopping'.format(self.id)
+        for peer_id in self._peers.keys():
+            self._remove_peer(peer_id)
+        for s in [self._direct_socket, self._cnc_frontend, self._cnc_backend]:
+            try:
+                s.close(linger=1000)
+            except AttributeError:
+                pass
+        if self._cnc_type == zmq.DEALER:
+            terminate()
+        print '[{0}] offline'.format(self.id)
 
-    def register_direct_message_handler(self, message_type, handler):
-        if message_type in self._direct_message_handlers:
+    def on_recv_cmd(self, cmd, handler):
+        if cmd in self._cnc_handlers:
             msg = '{0} already handled by {1}'.format(
-                message_type, self._direct_message_handlers[message_type])
+                cmd, self._cnc_handlers[cmd])
+            raise ValueError(msg)
+        self._cnc_handlers[cmd] = handler
+
+    def on_recv_direct(self, message_type, handler):
+        if message_type in self._direct_handlers:
+            msg = '{0} already handled by {1}'.format(
+                message_type, self._direct_handlers[message_type])
             raise ValueError(msg)
 
-        self._direct_message_handlers[message_type] = handler
+        self._direct_handlers[message_type] = handler
 
-    def register_global_message_handler(self, message_type, handler):
-        if message_type in self._global_message_handlers:
-            msg = '{0} already handled by {1}'.format(
-                message_type, self._global_message_handlers[message_type])
-            raise ValueError(msg)
+    def _emit_beacon(self):
+        if self._next_beacon < time.time():
+            msg = self._construct_beacon_msg()
+            msg = msgpack.dumps(msg)
+            self._beacon_socket.send('{0} {1}'.format(len(msg), msg))
+            self._next_beacon = time.time() + self._beacon_rate
 
-        self._global_message_handlers[message_type] = handler
+    def _cull_peers(self):
+        for peer in self._peers.values():
+            if peer.expired:
+                self._remove_peer(peer.id)
 
-        if self._global_stream:
-            self._global_stream.setsockopt(zmq.SUBSCRIBE, str(message_type))
+    def _process_message(self, raw_message):
+        message = msgpack.loads(raw_message)
+        host_id, host_address, host_port = message['host']
+        if host_id == self.id:
+            return self, None, None
 
-    def _register_socket(self, _socket, event_mask, handler):
-        self._socket_handlers[(_socket, event_mask)] = handler
-        self._poller.register(_socket, event_mask)
-
-    def _process_direct_message(self, envelope_data):
         try:
-            envelope = get_envelope_type(envelope_data[-1])
-            envelope = envelope.unseal(envelope_data)
-        except AttributeError:
-            envelope = envelope_data
-        try:
-            handler = self._direct_message_handlers[envelope.message_type]
+            peer = self._peers[host_id]
+            peer.touch()
         except KeyError:
-            print '[{0}] DROPPED MESSAGE - NO HANDLER: {1}'.format(self.id, envelope)
-            return
-        handler(envelope)
+            peer = self._add_peer(host_id, host_address, host_port)
 
-    def _process_global_message(self, envelope_data):
+        return peer, message['type'], message['body']
+
+    def _receive_cnc_message(self, message):
+        cmd, args, kwargs = msgpack.loads(message[0])
         try:
-            envelope = get_envelope_type(envelope_data[-1])
-            envelope = envelope.unseal(envelope_data)
-        except AttributeError:
-            envelope = envelope_data
-        # print '[{0}]'.format(self.id), 'received global message', envelope
-        try:
-            handler = self._global_message_handlers[envelope.message_type]
+            handler = self._cnc_handlers[cmd]
         except KeyError:
-            print '[{0}] DROPPED MESSAGE - NO HANDLER: {1}'.format(self.id, envelope)
+            print '[{0}] DROPPED COMMAND - NO HANDLER: {1}'.format(self.id, cmd)
             return
-        handler(envelope)
+        result = handler(*args, **kwargs)
+        if self._cnc_backend:
+            if not self._cnc_backend.closed:
+                self._cnc_backend.send(msgpack.dumps(result))
+        else:
+            return result
 
-    def _received_stop(self, envelope):
-        publish(None, self.id, 'stopping', 'stopping', host=self._broker_address)
-        print '[{0}] STOPPING'.format(self.id)
-        self._run = False
+    def _receive_beacon_message(self, fd, event):
+        message = self._beacon_socket.receive()
+        peers = self._peers.keys()
+        peer, msg_type, message = self._process_message(message)
 
-    def _received_direct_primer(self, envelope):
-        if envelope.sender == self.id:
-            self._direct_connection = True
-            if self._global_connection:
-                publish(None, self.id, 'online', 'online', host=self._broker_address)
-                print '[{0}] ONLINE'.format(self.id)
+        if peer is not self and peer.id not in peers:
+            ping = self._construct_ping_msg()
+            ping = msgpack.dumps(ping)
+            peer.send(ping)
 
-    def _received_global_primer(self, envelope):
-        if envelope.sender == self.id:
-            self._global_connection = True
-            if self._direct_connection:
-                publish(None, self.id, 'online', 'online', host=self._broker_address)
-                print '[{0}] ONLINE'.format(self.id)
-
-    def _received_ping(self, envelope):
-        if not self._online:
+    def _receive_direct_message(self, raw_message):
+        peer, message_type, message = self._process_message(raw_message[-1])
+        if peer is self:
             return
-        print '[{0}] received ping from {1}'.format(self.id, envelope.sender)
-        publish(envelope.sender, self.id, 'pong',
-                'tcp://{0}:{1}'.format(get_host_ip(), self._direct_port),
-                host=self._broker_address)
+
+        try:
+            handler = self._direct_handlers[message_type]
+        except KeyError:
+            print '[{0}] DROPPED MESSAGE - NO HANDLER: {1}'.format(self.id, message_type)
+            return
+        handler(peer, message)
+
+    def _handle_ping(self, peer, message):
+        print '[{0}] handling ping from'.format(self.id), peer.id
+        msg = self._construct_pong_msg()
+        msg = msgpack.dumps(msg)
+        peer.send(msg)
+
+    def _handle_pong(self, peer, message):
+        print '[{0}] handling pong from'.format(self.id), peer.id
+
+    def _handle_stop(self, peer, message):
+        self._stop()
+
+    def _stop(self):
+        self._loop.stop()
+
+    def stop(self):
+        if self._cnc_frontend:
+            if not self._cnc_frontend.closed:
+                cmd = ('stop', [], {})
+                self._cnc_frontend.send(msgpack.dumps(cmd))
+                self._container.join()
+                self._cnc_frontend.close(linger=1000)
+        else:
+            self._stop()
+
+    def join(self):
+        try:
+            self._container.join()
+        except AttributeError:
+            pass
+
+    def _add_peer(self, peer_id, peer_host, peer_socket):
+        peer = Peer(peer_id, peer_host, peer_socket)
+        self._peers[peer.id] = peer
+        return peer
+
+    def _remove_peer(self, peer_id):
+        try:
+            peer = self._peers.pop(peer_id)
+        except KeyError:
+            return
+        peer.stop()
+
+    def _construct_beacon_msg(self):
+        msg = {'type': 'beacon',
+               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'body': {}}
+        return msg
+
+    def _construct_ping_msg(self):
+        msg = {'type': 'ping',
+               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'body': {'msg_types': self._direct_handlers.keys()}}
+        return msg
+
+    def _construct_pong_msg(self):
+        msg = {'type': 'pong',
+               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'body': {'msg_types': self._direct_handlers.keys()}}
+        return msg

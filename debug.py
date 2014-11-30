@@ -1,7 +1,8 @@
 import time
 import zmq
 import msgpack
-import threading
+from threading import Thread
+from multiprocessing import Process
 
 import scylla
 
@@ -109,18 +110,18 @@ def _test_broker():
     print '[BROKER] - Goodbye'
 
 
-def _main():
+def _remote_testing():
     # print 'setting up broker'
     # b = scylla.Broker('Broker')
     # b.start()
 
     print 'setting up subscriber'
-    s = scylla.Node('SUBSCRIBER', broker_address=scylla.BROKER_ADDRESS)
-    s.register_direct_message_handler('TASK', _task_handler)
+    s = scylla.Node('SUBSCRIBER')
+    s.on_recv_direct('TASK', _task_handler)
     s.start()
 
     print 'setting up publisher'
-    p = threading.Thread(target=_test_pub, args=[s.id, 'TASK'])
+    p = Thread(target=_test_pub, args=[s.id, 'TASK'])
     p.start()
 
     print 'requesting tasks'
@@ -145,5 +146,33 @@ def _main():
 
     print 'DONE'
 
+
+def _discovery_testing():
+    a = scylla.Node('alpha')
+    a.start(process=True)
+
+    time.sleep(3)
+
+    b = scylla.Node('bravo')
+    b.start(process=True)
+
+    c = scylla.Node('charlie')
+    c.start(thread=True)
+
+    time.sleep(10)
+
+    d = scylla.Node('delta')
+    d.start(thread=True)
+
+    a.stop()
+
+    time.sleep(30)
+
+    b.stop()
+    c.stop()
+    d.stop()
+
+
 if __name__ == '__main__':
-    _main()
+    _discovery_testing()
+    scylla.terminate()
