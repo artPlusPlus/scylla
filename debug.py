@@ -7,21 +7,16 @@ from multiprocessing import Process
 import scylla
 
 
-def _task_handler(envelope):
-    # print 'GOT TASK: {0}:{1}'.format(envelope.message_type, envelope.message_body)
-    pass
+def _task_handler(peer, message):
+    print 'handling task', message, 'from', peer.id
 
 
-def _test_pub(target_subscriber, *msg_types):
-    with scylla.reply() as r:
-        if r.request.message_body == 'start':
-            r.reply('_test_pub', 'starting', 'sending tasks to {0}'.format(target_subscriber))
-
+def _test_pub(*msg_types):
     for i in xrange(0, 100 * 1000):
         # print 'sending {0}'.format(i)
         for msg_type in msg_types:
             msg_body = str(i)
-            scylla.publish(target_subscriber, '_test_pub', msg_type, msg_body, host=scylla.BROKER_ADDRESS)
+            scylla.push({'type': msg_type, 'host': ('debug', None, None), 'body': msg_body})
 
     print scylla.request('done', 'debug', 'sent all').message_body
 
@@ -149,6 +144,7 @@ def _remote_testing():
 
 def _discovery_testing():
     a = scylla.Node('alpha')
+    a.on_recv_direct('TASK', _task_handler)
     a.start(process=True)
 
     time.sleep(3)
