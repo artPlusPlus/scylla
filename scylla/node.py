@@ -7,7 +7,7 @@ import zmq
 from zmq.eventloop.zmqstream import ZMQStream
 from zmq.eventloop.ioloop import ZMQIOLoop, PeriodicCallback
 
-from . import DEFAULT_DISCOVERY_PORT, NODE_MSG_PORT_START
+from . import DEFAULT_DISCOVERY_PORT, DEFAULT_DIRECT_PORT_START
 from ._udp import UDPSocket
 from .peer import Peer
 from .util import get_host_name, get_host_ip
@@ -56,7 +56,7 @@ class Node(object):
         self._beacon_callbacks = []
 
         self._user_port = port is not None
-        self._direct_port = port or NODE_MSG_PORT_START
+        self._direct_port = port or DEFAULT_DIRECT_PORT_START
         self._direct_socket = None
         self._direct_stream = None
         self._direct_handlers = {}  # TODO: weakref.WeakValueDictionary()
