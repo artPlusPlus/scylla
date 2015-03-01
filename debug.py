@@ -1,24 +1,55 @@
 import time
 import zmq
 import msgpack
-from threading import Thread
+from threading import Thread, Lock
 from multiprocessing import Process
 
 import scylla
 
 
+_RECEIVE_START = None
+_END_LOCK = Lock()
+_RECEIVE_END = None
+_MESSAGE_COUNT = 10000
+
+
+def _get_receive_end():
+    with _END_LOCK:
+        return _RECEIVE_END
+
+
+def _set_receive_end(value):
+    with _END_LOCK:
+        global _RECEIVE_END
+        _RECEIVE_END = value
+
+
 def _task_handler(peer, message):
-    print 'handling task', message, 'from', peer.id
+    global _RECEIVE_START
+
+    msg_id, msg_total = message
+    if msg_id == 0:
+        _RECEIVE_START = time.time()
+        _set_receive_end(False)
+    if not msg_id % (msg_total / 100):
+        print msg_id
+    if msg_id + 1 >= msg_total:
+        print '[debug] received {0} messages:'.format(msg_total), time.time() - _RECEIVE_START
+        _set_receive_end(True)
+    print 'fuuck', msg_id
 
 
-def _test_pub(*msg_types):
-    for i in xrange(0, 100 * 1000):
+def _test_pub(node_handle, msg_type):
+    node_handle.connect(zmq.Context.instance())
+    start = time.time()
+    for i in xrange(0, _MESSAGE_COUNT):
         # print 'sending {0}'.format(i)
-        for msg_type in msg_types:
-            msg_body = str(i)
-            scylla.push({'type': msg_type, 'host': ('debug', None, None), 'body': msg_body})
-
-    print scylla.request('done', 'debug', 'sent all').message_body
+        msg = {'type': msg_type,
+               'node': ('debug', None, None),
+               'body': (i, _MESSAGE_COUNT)}
+        node_handle.send(msgpack.dumps(msg))
+    node_handle.close()
+    print '[debug] sent {0} messages:'.format(_MESSAGE_COUNT), time.time() - start
 
 
 def _test_sub():
@@ -147,23 +178,29 @@ def _discovery_testing():
     a.on_recv_direct('TASK', _task_handler)
     a.start(process=True)
 
-    time.sleep(3)
-
     b = scylla.Node('bravo')
+    b.update = _test_pub
     b.start(process=True)
 
     c = scylla.Node('charlie')
     c.start(thread=True)
 
-    time.sleep(10)
-
     d = scylla.Node('delta')
     d.start(thread=True)
 
+    time.sleep(2)
+
+    handle = scylla.NodeHandle(a.id, a.host_ip, a.direct_port)
+    msg_type = 'TASK'
+    pub_thread = Thread(target=_test_pub, args=(handle, msg_type))
+    pub_thread.start()
+    pub_thread.join()
+
+    while not _get_receive_end():
+        print 'waiting'
+        time.sleep()
+
     a.stop()
-
-    time.sleep(30)
-
     b.stop()
     c.stop()
     d.stop()

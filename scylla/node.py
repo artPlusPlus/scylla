@@ -162,24 +162,28 @@ class Node(object):
 
     def _process_message(self, raw_message):
         message = msgpack.loads(raw_message)
-        host_id, host_address, host_port = message['host']
-        if host_id == self.id:
-            return self, None, None
+        peer_id, peer_address, peer_port = message.get('node', (None, None, None))
+        msg_type = message.get('type', None)
+        msg_body = message.get('body', None)
 
-        try:
-            peer = self._peers[host_id]
-            peer.touch()
-        except KeyError:
-            peer = self._add_peer(host_id, host_address, host_port)
+        peer = None
+        if peer_id == self.id:
+            peer = self
+        elif all([peer_id, peer_address, peer_port]):
+            try:
+                peer = self._peers[peer_id]
+                peer.touch()
+            except KeyError:
+                peer = self._add_peer(peer_id, peer_address, peer_port)
 
-        return peer, message['type'], message['body']
+        return peer, msg_type, msg_body
 
     def _receive_beacon_message(self, fd, event):
         message = self._beacon_socket.receive()
         peers = self._peers.keys()
         peer, msg_type, message = self._process_message(message)
 
-        if peer is not self and peer.id not in peers:
+        if peer and peer is not self and peer.id not in peers:
             ping = self._construct_ping_msg()
             ping = msgpack.dumps(ping)
             peer.send(ping)
@@ -238,7 +242,8 @@ class Node(object):
         raise RuntimeError('Unable to process command. {0} is not running.'.format(self.name))
 
     def _add_peer(self, peer_id, peer_host, peer_port):
-        peer = Peer(peer_id, peer_host, peer_port, self._context)
+        peer = Peer(peer_id, peer_host, peer_port)
+        peer.connect(self._context)
         self._peers[peer.id] = peer
         return peer
 
@@ -247,34 +252,34 @@ class Node(object):
             peer = self._peers.pop(peer_id)
         except KeyError:
             return
-        peer.stop()
+        peer.close()
 
     def _construct_beacon_msg(self):
         msg = {'type': 'beacon',
-               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'node': (self.id, get_host_ip(), str(self._direct_port)),
                'body': {}}
         return msg
 
     def _construct_ping_msg(self):
         msg = {'type': 'ping',
-               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'node': (self.id, get_host_ip(), str(self._direct_port)),
                'body': {'msg_types': self._direct_handlers.keys()}}
         return msg
 
     def _construct_pong_msg(self):
         msg = {'type': 'pong',
-               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'node': (self.id, get_host_ip(), str(self._direct_port)),
                'body': {'msg_types': self._direct_handlers.keys()}}
         return msg
 
     def _construct_stop_msg(self):
         msg = {'type': 'stop',
-               'host': (self.id, get_host_ip(), str(self._direct_port)),
+               'node': (self.id, get_host_ip(), str(self._direct_port)),
                'body': {}}
         return msg
 
     def _construct_cmd(self, cmd, *args, **kwargs):
         cmd = {'type': cmd,
-               'host': (self._cnc_proxy_id, get_host_ip(), str(self._cnc_result_port)),
+               'node': (self._cnc_proxy_id, get_host_ip(), str(self._cnc_result_port)),
                'body': {'args': args, 'kwargs': kwargs}}
         return cmd
