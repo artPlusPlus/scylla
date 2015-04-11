@@ -63,5 +63,5 @@ class Graph(object):
     def to_json(self):
         result = {'id': self._id,
                   'name': self._name,
-                  'node_date': [n.to_json for n in self._nodes]}
+                  'node_date': [n.to_json() for n in self._nodes]}
         return result

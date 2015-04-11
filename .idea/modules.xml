@@ -3,7 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/Scylla.iml" filepath="$PROJECT_DIR$/.idea/Scylla.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../scylla-flask/.idea/scylla-flask.iml" filepath="$PROJECT_DIR$/../scylla-flask/.idea/scylla-flask.iml" />
     </modules>
   </component>
 </project>
-
