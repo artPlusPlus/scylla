@@ -1,5 +1,6 @@
 import weakref
 import uuid
+import socket
 from threading import Thread
 from multiprocessing import Process
 
@@ -10,11 +11,15 @@ from .output import Output
 from .input import Input
 from .request import Methods
 from .response import Response, Statuses
+from .request import Request
 
 
 class Node(object):
-    def __init__(self, discovery_port=50000):
+    def __init__(self, name, id=None, discovery_port=50000):
         super(Node, self).__init__()
+
+        self._name = name
+        self._id = id or uuid.uuid4()
 
         self._zmq_context = None
 
@@ -23,12 +28,14 @@ class Node(object):
         self._inputs = None
         self._running = False
         self._forked = False
+
         self._request_port = None
         self._discovery_port = discovery_port
-
         self._discovery_interface = None
         self._request_interface = None
         self._peer_interfaces = {}
+
+        self._host = None
 
     def __setattr__(self, key, value):
         if isinstance(value, Output):
@@ -39,7 +46,7 @@ class Node(object):
             self._inputs[value.id] = value
         super(Node, self).__setattr__(key, value)
 
-    def start(self, name, fork=False, **kwargs):
+    def start(self, fork=False, **kwargs):
         if self._running:
             return
         self._forked = fork
@@ -47,54 +54,75 @@ class Node(object):
 
         kwargs['fork'] = fork
         if fork:
-            process = Process(target=self._start, args=[name], kwargs=kwargs)
+            process = Process(target=self._start, kwargs=kwargs)
             process.daemon = True
             process.start()
         else:
-            thread = Thread(target=self._start, args=[name], kwargs=kwargs)
+            thread = Thread(target=self._start, kwargs=kwargs)
             thread.daemon = True
             thread.start()
 
-    def _start(self, name, fork=False, **kwargs):
+    def _start(self, fork=False, **kwargs):
         self._zmq_context = zmq.Context()
 
         self._slots = weakref.WeakValueDictionary()
         self._outputs = weakref.WeakValueDictionary()
         self._inputs = weakref.WeakValueDictionary()
 
-        self._init_state(name, fork=fork, **kwargs)
-        self._init_interface(name, fork=fork, **kwargs)
+        self._init_state(fork=fork, **kwargs)
+        self._init_interface(fork=fork, **kwargs)
         self._process_requests()
 
-    def _init_state(self, name, fork=False, **kwargs):
-        self._id = kwargs.get('id') or uuid.uuid4()
+    def _init_state(self, fork=False, **kwargs):
         self._id_out = Output(u'Id', self._compute_id, type_hint=uuid.UUID)
 
-        self._name = name
         self._new_name = None
         self._name_out = Output(u'Id', self._compute_name, type_hint=unicode)
         self._name_in = Input(u'Name', self._put_name, self._dirty_name,
                               self._pull_name, type_hint=unicode)
 
-    def _init_interface(self, name, fork=False, **kwargs):
+    def _init_interface(self, fork=False, **kwargs):
         self._discovery_interface = UDPSocket(self._discovery_port)
         self._request_interface = self._zmq_context.socket(zmq.ROUTER)
         if fork:
+            for addr in socket.gethostbyname_ex(socket.gethostname())[-1]:
+                if not addr.startswith('127'):
+                    self._host = addr
+                    break
             self._request_port = self._request_interface.bind_to_random_port('tcp://*')
         else:
+            self._host = 'inproc'
+            self._request_port = self._id
             self._request_interface.bind('inproc://{0}'.format(self._id))
 
     def _process_requests(self):
+        poller = zmq.Poller()
+        poller.register(self._discovery_interface.socket, zmq.POLLIN)
+        poller.register(self._request_interface, zmq.POLLIN)
         while True:
-            origin, request = self._request_interface.recv_multipart(timeout=1000)
-            if not request:
-                continue
-            response = self._handle_request(request)
+            try:
+                events = dict(poller.poll(1000))
+            except KeyboardInterrupt:
+                print "interrupt"
+                break
 
-            self._request_interface.send_multipart([origin, response.pack()])
+            if self._discovery_interface.fileno in events:
+                msg = self._discovery_interface.recv()
+                self._handle_ping(msg)
+            if self._request_interface in events:
+                origin, _, request = self._request_interface.recv_multipart()
+                if not request:
+                    continue
+                request = Request.unpack(request)
+                response = self._handle_request(request)
+                response = response.pack()
+                self._request_interface.send_multipart([origin, '', response])
+
+    def _handle_ping(self, msg):
+        print self._name, self._host, self._request_port
 
     def _handle_request(self, request):
-        if request.slot:
+        if request.url.slot:
             try:
                 response = self._slots[request.slot](request)
             except KeyError:
@@ -130,7 +158,7 @@ class Node(object):
         return self._name
 
     def to_json(self):
-        result = {'id': self._id,
+        result = {'id': str(self._id),
                   'name': self._name,
                   'inputs': [i.to_json() for i in self._inputs.values()],
                   'outputs': [o.to_json() for o in self._outputs.values()]}

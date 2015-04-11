@@ -9,11 +9,13 @@ from .response import Response
 
 def request(client, method, url, data=None, timeout=1000):
     req = Request(client, method, url, data=data)
-    s = zmq.Context.instance().socket(zmq.DEALER)
-    s.identity = req.id
-    s.connect(req.url.host)
+
+    s = zmq.Context.instance().socket(zmq.REQ)
+    s.identity = req.id.bytes
+    s.connect('{0}://{1}'.format(req.url.scheme, req.url.host))
     s.send(req.pack())
-    resp = s.receive(timeout=timeout)
+
+    resp = s.recv()
     if resp:
         resp = Response.unpack(resp)
     s.close()
@@ -21,19 +23,19 @@ def request(client, method, url, data=None, timeout=1000):
 
 
 def get(url, data=None):
-    return request(Methods.GET, url, data=data)
+    return request(None, Methods.GET, url, data=data)
 
 
 def put(url, data=None):
-    return request(Methods.PUT, url, data=data)
+    return request(None, Methods.PUT, url, data=data)
 
 
 def post(url, data=None):
-    return request(Methods.POST, url, data=data)
+    return request(None, Methods.POST, url, data=data)
 
 
 def delete(url, data=None):
-    return request(Methods.DELETE, url, data=data)
+    return request(None, Methods.DELETE, url, data=data)
 
 
 class Methods(object):

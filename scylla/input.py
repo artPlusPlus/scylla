@@ -10,9 +10,12 @@ class Input(Slot):
     def __init__(self, name, put_handler, dirty_handler, pull_handler, type_hint=None, multi=False):
         super(Input, self).__init__(name, type_hint=type_hint)
 
-        self._put_handler = weakref.ref(put_handler)
-        self._dirty_handler = weakref.ref(dirty_handler)
-        self._pull_handler = weakref.ref(pull_handler)
+        # self._put_handler = weakref.ref(put_handler)
+        # self._dirty_handler = weakref.ref(dirty_handler)
+        # self._pull_handler = weakref.ref(pull_handler)
+        self._put_handler = put_handler
+        self._dirty_handler = dirty_handler
+        self._pull_handler = pull_handler
         self._multi = multi
         self._is_dirty = False
 

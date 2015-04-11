@@ -1,19 +1,19 @@
 import re
 
 _URI_SCHEME_PATTERN = r'(?P<SCHEME>.*)://'
-_URI_HOST_PATTERN = r'(?P<HOST>.*)/',
+_URI_HOST_PATTERN = r'(?P<HOST>.*)/'
 _URI_PATH_PATTERNS = [r'(?P<GRAPHS>graphs/)',
                       r'(?P<GRAPH>.*)',
-                      r'(?P<NODES>/nodes/),',
+                      r'(?P<NODES>/nodes/)',
                       r'(?P<NODE>.*)',
                       r'(?P<SLOTS>/slots/)',
                       r'(?P<SLOT>.*)',
                       r'(?P<CONNECTIONS>/connections/)',
                       r'(?P<CONNECTION>.*)']
-_URI_PARTS_RE = '{0}{1}(?P<PATH>.*{2}.*)'.format(_URI_SCHEME_PATTERN,
+_URI_PATTERN = '{0}{1}(?P<PATH>{2}?)'.format(_URI_SCHEME_PATTERN,
                                    _URI_HOST_PATTERN,
                                    '?'.join(_URI_PATH_PATTERNS))
-_URI_PARTS_RE = re.compile(_URI_PARTS_RE)
+_URI_PARTS_RE = re.compile(_URI_PATTERN)
 
 
 class URI(object):
@@ -37,25 +37,35 @@ class URI(object):
 
     @property
     def has_nodes(self):
-        if all([self.has_graphs, self.graph]):
+        if self.graph:
             return bool(self._path_parts['NODES'])
         return False
 
     @property
     def node(self):
-        if all([self.has_graphs, self.graph, self.has_nodes]):
+        if self.has_nodes:
             return self._path_parts['NODE']
         return None
 
     @property
+    def has_slots(self):
+        if self.node:
+            return self._path_parts['SLOTS']
+
+    @property
+    def slot(self):
+        if self.has_slots:
+            return self._path_parts['SLOT']
+
+    @property
     def has_connections(self):
-        if all([self.has_graphs, self.graph, self.has_nodes, self.node]):
+        if self.slot:
             return bool(self._path_parts['CONNECTIONS'])
         return False
 
     @property
     def connection(self):
-        if all([self.has_graphs, self.graph, self.has_nodes, self.node, self.has_connections]):
+        if self.has_connections:
             return self._path_parts['CONNECTION']
         return None
 

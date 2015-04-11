@@ -118,9 +118,9 @@ class Slot(object):
         pass
 
     def to_json(self):
-        result = {'id': self._id,
+        result = {'id': str(self._id),
                   'name': self._name,
                   'slot_type': self.__class__.__name__,
-                  'data_type_hint': self._type_hint,
+                  'data_type_hint': self.type_hint.__name__,
                   'connections': [c.to_json() for c in self._connections]}
         return result

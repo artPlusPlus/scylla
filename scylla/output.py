@@ -8,7 +8,8 @@ class Output(Slot):
     def __init__(self, name, compute_handler, type_hint=None):
         super(Output, self).__init__(name, type_hint=type_hint)
 
-        self._compute_handler_ref = weakref.ref(compute_handler)
+        # self._compute_handler_ref = weakref.ref(compute_handler)
+        self._compute_handler_ref = compute_handler
 
     # def get(self, client=None):
     #     handler = self._compute_handler_ref()
@@ -41,7 +42,8 @@ class Output(Slot):
 
     def to_json(self, request=None):
         result = super(Output, self).to_json()
-        result['value'] = self._compute_handler_ref()(request)
+        # result['value'] = self._compute_handler_ref()(request)
+        result['value'] = str(self._compute_handler_ref(request))
         return result
 
 
