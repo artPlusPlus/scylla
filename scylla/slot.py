@@ -1,61 +1,126 @@
 import weakref
+import uuid
 
-import zmq
+from .request import Methods, delete
+from .response import Response, Statuses
+from .connection_collection import ConnectionCollection
 
 
 class Slot(object):
     @property
     def id(self):
-        if self._node:
-            return '{0}:{1}'.format(self._node.id, self._name)
-        return None
+        return self._id
 
     @property
-    def _node(self):
-        try:
-            return self._node_ref()
-        except TypeError:
-            return None
+    def name(self):
+        return self._name
 
     @property
-    def host_ip(self):
-        if self._node:
-            return self._node.host_ip
-        return None
+    def type_hint(self):
+        if isinstance(self._type_hint, weakref.ReferenceType):
+            return self._type_hint()
+        return self._type_hint
 
-    @property
-    def port(self):
-        return self._port
-
-    def __init__(self, name, node, port=None):
+    def __init__(self, name, type_hint=None):
         super(Slot, self).__init__()
 
+        self._id = uuid.uuid4()
         self._name = name
-        self._node_ref = weakref.ref(node)
-        self._port = port
-        self._socket = None
+        self._connections = ConnectionCollection()
 
+        try:
+            self._type_hint = weakref.ref(type_hint)
+        except TypeError:
+            self._type_hint = type_hint
 
-class Input(Slot):
-    def __init__(self, name, node, port=None):
-        super(Input, self).__init__(name, node, port=port)
+    def __call__(self, request):
+        response = None
+        if request.method == Methods.GET:
+            if request.url.connection:
+                response = self._get_connection(request)
+            elif request.url.has_connections:
+                response = self._get_connections(request)
+            else:
+                response = self._get(request)
+        elif request.method == Methods.PUT:
+            if request.url.connection:
+                response = self._put_connection(request)
+            else:
+                response = self._put(request)
+        elif request.method == Methods.DELETE:
+            if request.url.connection:
+                response = self._delete_connection(request)
 
-        self._socket = self._node.context.socket(zmq.ROUTER)
-        if not port:
-            self._socket.bind_to_random_port('tcp://{0}'.format(self.host_ip))
+        if not response:
+            if request.url.connection:
+                data = [Methods.GET, Methods.PUT, Methods.DELETE]
+            elif request.url.has_connections:
+                data = [Methods.GET]
+            else:
+                data = [Methods.GET]
+            response = Response(request.client,
+                                Statuses.METHOD_NOT_ALLOWED,
+                                data=data)
+        return response
+
+    def _get(self, request):
+        response = Response(request.client,
+                            Statuses.OK,
+                            data=self.to_json())
+        return response
+
+    def _get_connections(self, request):
+        response = Response(
+            request.client, Statuses.OK,
+            data=[c.to_json() for c in self._connections])
+        return response
+
+    def _get_connection(self, request):
+        try:
+            connection = self._connections[request.url.connection]
+        except KeyError:
+            response = Response(request.client, Statuses.NOT_FOUND)
         else:
-            self._socket.bind('tcp://{0}:{1}'.format(self._node.host, port))
+            response = Response(request.client, Statuses.OK,
+                                data=connection.to_json)
+        return response
 
+    def _put(self, request):
+        response = Response(request.client,
+                            Statuses.METHOD_NOT_ALLOWED,
+                            data=['GET'])
+        return response
 
-class Output(Slot):
-    def __init__(self, name, node, port):
-        super(Output, self).__init__(name, node, port=port)
+    def _put_connection(self, request):
+        pass
 
-        self._socket = self._node.context.socket(zmq.DEALER)
-        self._socket.setsockopt(zmq.IDENTITY, self.id)
+    def _delete_connection(self, request):
+        if request.client.connection != request.url.connection:
+            # When the agent requesting disconnection is not the source
+            # itself, we must request that the source drop us as a target
+            source_url = '{0}/connections/{1}'.format(
+                self._connections[request.url.connection], self._id)
+            drop_response = delete(source_url)
+            if drop_response.status not in (Statuses.OK, Statuses.NOT_FOUND):
+                response = Response(
+                    request.client, Statuses.BAD_REQUEST,
+                    data='Unable to disconnect. Source failed to disconnect.')
+                return response
+        try:
+            self._connections.remove(request.connection)
+        except ValueError:
+            response = Response(request.client, Statuses.NOT_FOUND)
+        else:
+            response = Response(request.client, Statuses.OK)
+        return response
 
-    def connect(self, host, port):
-        self._socket.connect('tcp://{0}:{1}'.format(host, port))
+    def _connect(self, url):
+        pass
 
-    def __call__(self, message):
-        self._socket.send(message)
+    def to_json(self):
+        result = {'id': self._id,
+                  'name': self._name,
+                  'slot_type': self.__class__.__name__,
+                  'data_type_hint': self._type_hint,
+                  'connections': [c.to_json() for c in self._connections]}
+        return result
