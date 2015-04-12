@@ -104,7 +104,7 @@ class Node(object):
         poller = zmq.Poller()
         poller.register(self._discovery_interface.socket, zmq.POLLIN)
         poller.register(self._request_interface, zmq.POLLIN)
-        while True:
+        while self._running:
             try:
                 events = dict(poller.poll(1000))
             except KeyboardInterrupt:
@@ -150,6 +150,9 @@ class Node(object):
         elif request.method == Methods.GET:
             response = Response(request.client, Statuses.OK,
                                 data=self.to_json())
+        elif request.method == Methods.DELETE:
+            response = Response(request.client, Statuses.OK)
+            self._running = False
         else:
             response = Response(request.client,
                                 Statuses.METHOD_NOT_ALLOWED,
