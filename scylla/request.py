@@ -8,17 +8,18 @@ from .response import Response
 
 
 def request(client, method, url, data=None, timeout=1000):
+    ctx = zmq.Context()
     req = Request(client, method, url, data=data)
 
-    s = zmq.Context.instance().socket(zmq.REQ)
+    s = ctx.socket(zmq.REQ)
     s.identity = req.id.bytes
     s.connect('{0}://{1}'.format(req.url.scheme, req.url.host))
     s.send(req.pack())
 
     resp = s.recv()
-    if resp:
-        resp = Response.unpack(resp)
+    resp = Response.unpack(resp)
     s.close()
+    ctx.term()
     return resp
 
 

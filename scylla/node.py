@@ -1,6 +1,5 @@
 import weakref
 import uuid
-import socket
 from threading import Thread
 from multiprocessing import Process
 
@@ -12,6 +11,8 @@ from .input import Input
 from .request import Methods
 from .response import Response, Statuses
 from .request import Request
+from .ping import Ping, Pong
+import _util
 
 
 class Node(object):
@@ -71,7 +72,10 @@ class Node(object):
 
         self._init_state(fork=fork, **kwargs)
         self._init_interface(fork=fork, **kwargs)
-        self._process_requests()
+
+        self._process_messages()
+
+        self._close_interface()
 
     def _init_state(self, fork=False, **kwargs):
         self._id_out = Output(u'Id', self._compute_id, type_hint=uuid.UUID)
@@ -82,20 +86,21 @@ class Node(object):
                               self._pull_name, type_hint=unicode)
 
     def _init_interface(self, fork=False, **kwargs):
-        self._discovery_interface = UDPSocket(self._discovery_port)
+        self._discovery_interface = UDPSocket()
+        self._discovery_interface.bind(self._discovery_port)
+
+        self._pong_interface = self._zmq_context.socket(zmq.PUSH)
+
         self._request_interface = self._zmq_context.socket(zmq.ROUTER)
         if fork:
-            for addr in socket.gethostbyname_ex(socket.gethostname())[-1]:
-                if not addr.startswith('127'):
-                    self._host = addr
-                    break
+            self._host = _util.get_tcp_host()
             self._request_port = self._request_interface.bind_to_random_port('tcp://*')
         else:
             self._host = 'inproc'
             self._request_port = self._id
             self._request_interface.bind('inproc://{0}'.format(self._id))
 
-    def _process_requests(self):
+    def _process_messages(self):
         poller = zmq.Poller()
         poller.register(self._discovery_interface.socket, zmq.POLLIN)
         poller.register(self._request_interface, zmq.POLLIN)
@@ -107,8 +112,17 @@ class Node(object):
                 break
 
             if self._discovery_interface.fileno in events:
-                msg = self._discovery_interface.recv()
-                self._handle_ping(msg)
+                ping = self._discovery_interface.recv()
+                if not ping:
+                    continue
+                ping = Ping.unpack(ping)
+                pong = self._handle_ping(ping)
+                pong = pong.pack()
+
+                self._pong_interface.connect(ping.pong_addr)
+                self._pong_interface.send(pong)
+                self._pong_interface.disconnect(ping.pong_addr)
+
             if self._request_interface in events:
                 origin, _, request = self._request_interface.recv_multipart()
                 if not request:
@@ -118,8 +132,14 @@ class Node(object):
                 response = response.pack()
                 self._request_interface.send_multipart([origin, '', response])
 
-    def _handle_ping(self, msg):
-        print self._name, self._host, self._request_port
+    def _handle_ping(self, _ping):
+        if self._forked:
+            url = 'tcp://{0}:{1}'.format(self._host, self._request_port)
+        else:
+            url = 'inproc://{0}'.format(self._id)
+        pong = Pong(self._id, self._name, self.__class__.__name__, url)
+
+        return pong
 
     def _handle_request(self, request):
         if request.url.slot:
@@ -135,6 +155,12 @@ class Node(object):
                                 Statuses.METHOD_NOT_ALLOWED,
                                 data=['GET'])
         return response
+
+    def _close_interface(self):
+        self._discovery_interface.close()
+        self._request_interface.close()
+        self._pong_interface.close()
+        self._zmq_context.term()
 
     def _compute_id(self, request):
         return self._id
@@ -160,7 +186,10 @@ class Node(object):
     def to_json(self):
         result = {'id': str(self._id),
                   'name': self._name,
+                  'type': self.__class__.__name__,
                   'inputs': [i.to_json() for i in self._inputs.values()],
                   'outputs': [o.to_json() for o in self._outputs.values()]}
         return result
 
+    def __del__(self):
+        self._close_interface()
