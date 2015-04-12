@@ -33,3 +33,13 @@ class ConnectionCollection(object):
             return self._map_id_url[key]
         except KeyError:
             raise KeyError()
+
+    def __len__(self):
+        return len(self._connection_order)
+
+    def __bool__(self):
+        return bool(self._connection_order)
+
+    # Python 2.x
+    def __nonzero__(self):
+        return self.__bool__()

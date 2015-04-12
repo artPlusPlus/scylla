@@ -1,16 +1,17 @@
 import re
+import uuid
 
 _URI_SCHEME_PATTERN = r'(?P<SCHEME>.*)://'
-_URI_HOST_PATTERN = r'(?P<HOST>.*)/'
+_URI_HOST_PATTERN = r'(?P<HOST>.*?)/'
 _URI_PATH_PATTERNS = [r'(?P<GRAPHS>graphs/)',
-                      r'(?P<GRAPH>.*)',
-                      r'(?P<NODES>/nodes/)',
-                      r'(?P<NODE>.*)',
-                      r'(?P<SLOTS>/slots/)',
-                      r'(?P<SLOT>.*)',
+                      r'(?P<GRAPH>(?<=graphs/).*?)',
+                      r'(?P<NODES>nodes/)',
+                      r'(?P<NODE>(?<=nodes/).*)?',
+                      r'(?P<SLOTS>slots/)',
+                      r'(?P<SLOT>(?<=slots/).*)',
                       r'(?P<CONNECTIONS>/connections/)',
-                      r'(?P<CONNECTION>.*)']
-_URI_PATTERN = '{0}{1}(?P<PATH>{2}?)'.format(_URI_SCHEME_PATTERN,
+                      r'(?P<CONNECTION>(?<=/connections/).*)']
+_URI_PATTERN = '{0}{1}(?P<PATH>{2}?)?'.format(_URI_SCHEME_PATTERN,
                                    _URI_HOST_PATTERN,
                                    '?'.join(_URI_PATH_PATTERNS))
 _URI_PARTS_RE = re.compile(_URI_PATTERN)
@@ -31,31 +32,38 @@ class URI(object):
 
     @property
     def graph(self):
+        result = None
         if self.has_graphs:
-            return self._path_parts['GRAPH']
-        return None
+            result = self._path_parts['GRAPH']
+            if result:
+                result = uuid.UUID(result)
+        return result
 
     @property
     def has_nodes(self):
-        if self.graph:
-            return bool(self._path_parts['NODES'])
-        return False
+        return bool(self._path_parts['NODES'])
 
     @property
     def node(self):
+        result = None
         if self.has_nodes:
-            return self._path_parts['NODE']
-        return None
+            result = self._path_parts['NODE']
+            if result:
+                result = uuid.UUID(result)
+        return result
 
     @property
     def has_slots(self):
-        if self.node:
-            return self._path_parts['SLOTS']
+        return bool(self._path_parts['SLOTS'])
 
     @property
     def slot(self):
+        result = None
         if self.has_slots:
-            return self._path_parts['SLOT']
+            result = self._path_parts['SLOT']
+            if result:
+                result = uuid.UUID(result)
+        return result
 
     @property
     def has_connections(self):
@@ -65,9 +73,12 @@ class URI(object):
 
     @property
     def connection(self):
+        result = None
         if self.has_connections:
-            return self._path_parts['CONNECTION']
-        return None
+            result = self._path_parts['CONNECTION']
+            if result:
+                result = uuid.UUID(result)
+        return result
 
     @property
     def path(self):

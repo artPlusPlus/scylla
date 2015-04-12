@@ -85,5 +85,5 @@ class Request(object):
     def unpack(cls, packed_request):
         result = msgpack.unpackb(packed_request)
         result = cls(result['client'], result['method'],
-                     result['url'], result['data'])
+                     result['url'], data=result['data'])
         return result

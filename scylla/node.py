@@ -30,9 +30,10 @@ class Node(object):
         self._running = False
         self._forked = False
 
+        self._ping_port = discovery_port
         self._request_port = None
-        self._discovery_port = discovery_port
-        self._discovery_interface = None
+        self._ping_interface = None
+        self._pong_interface = None
         self._request_interface = None
         self._peer_interfaces = {}
 
@@ -81,13 +82,13 @@ class Node(object):
         self._id_out = Output(u'Id', self._compute_id, type_hint=uuid.UUID)
 
         self._new_name = None
-        self._name_out = Output(u'Id', self._compute_name, type_hint=unicode)
+        self._name_out = Output(u'Name', self._compute_name, type_hint=unicode)
         self._name_in = Input(u'Name', self._put_name, self._dirty_name,
                               self._pull_name, type_hint=unicode)
 
     def _init_interface(self, fork=False, **kwargs):
-        self._discovery_interface = UDPSocket()
-        self._discovery_interface.bind(self._discovery_port)
+        self._ping_interface = UDPSocket()
+        self._ping_interface.bind(self._ping_port)
 
         self._pong_interface = self._zmq_context.socket(zmq.PUSH)
 
@@ -102,7 +103,7 @@ class Node(object):
 
     def _process_messages(self):
         poller = zmq.Poller()
-        poller.register(self._discovery_interface.socket, zmq.POLLIN)
+        poller.register(self._ping_interface.socket, zmq.POLLIN)
         poller.register(self._request_interface, zmq.POLLIN)
         while self._running:
             try:
@@ -111,10 +112,11 @@ class Node(object):
                 print "interrupt"
                 break
 
-            if self._discovery_interface.fileno in events:
-                ping = self._discovery_interface.recv()
+            if self._ping_interface.fileno in events:
+                ping = self._ping_interface.recv()
                 if not ping:
                     continue
+
                 ping = Ping.unpack(ping)
                 pong = self._handle_ping(ping)
                 pong = pong.pack()
@@ -127,9 +129,11 @@ class Node(object):
                 origin, _, request = self._request_interface.recv_multipart()
                 if not request:
                     continue
+
                 request = Request.unpack(request)
                 response = self._handle_request(request)
                 response = response.pack()
+
                 self._request_interface.send_multipart([origin, '', response])
 
     def _handle_ping(self, _ping):
@@ -144,9 +148,11 @@ class Node(object):
     def _handle_request(self, request):
         if request.url.slot:
             try:
-                response = self._slots[request.slot](request)
+                slot = self._slots[request.url.slot]
             except KeyError:
                 response = Response(request.client, Statuses.NOT_FOUND)
+            else:
+                response = slot(request)
         elif request.method == Methods.GET:
             response = Response(request.client, Statuses.OK,
                                 data=self.to_json())
@@ -160,16 +166,16 @@ class Node(object):
         return response
 
     def _close_interface(self):
-        self._discovery_interface.close()
-        self._request_interface.close()
+        self._ping_interface.close()
         self._pong_interface.close()
+        self._request_interface.close()
         self._zmq_context.term()
 
     def _compute_id(self, request):
         return self._id
 
     def _put_name(self, request):
-        value = request.data['value']
+        value = unicode(request.data)
         changed = self._new_name != value
         self._new_name = value
         return changed
@@ -183,7 +189,7 @@ class Node(object):
     def _compute_name(self, request):
         was_dirty, new_name = self._name_in.pull_value(request)
         if was_dirty:
-            self._name = new_name
+            self._name = new_name[new_name.keys()[0]]
         return self._name
 
     def to_json(self):

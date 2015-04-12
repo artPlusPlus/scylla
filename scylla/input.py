@@ -29,7 +29,7 @@ class Input(Slot):
             else:
                 # No connections, handler provides the last value 'put' into
                 # the Input
-                result[None] = self._pull_handler()
+                result[None] = self._pull_handler(request)
             self._is_dirty = False
             return True, result
         return False, result
@@ -38,14 +38,15 @@ class Input(Slot):
         if self._is_dirty:
             return
         self._is_dirty = True
-        handler = self._dirty_handler(request)
-        if not handler:
-            raise InputError('Dirty Handler is dead.')
-        handler()
+        # handler = self._dirty_handler()  # TODO: Weakref
+        # if not handler:
+        #     raise InputError('Dirty Handler is dead.')
+        # handler(request)
+        self._dirty_handler(request)
 
     def _get(self, request):
         response = super(Input, self)._get(request)
-        request.data['multi'] = self._multi
+        response.data['multi'] = self._multi
         return response
 
     def _put(self, request):
@@ -60,7 +61,7 @@ class Input(Slot):
                     self._dirty(request)
                 response = Response(request.client, Statuses.OK)
             except Exception, e:
-                response = Response(request.client, Statuses.BAD_REQUEST, data=str(e))
+                response = Response(request.client, Statuses.BAD_REQUEST, data=unicode(e))
         return response
 
     def _put_connection(self, request):
