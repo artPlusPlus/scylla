@@ -1,8 +1,10 @@
 import time
+from uuid import UUID
 
 import zmq
 import msgpack
 
+from . import _ZMQ_CONTEXT
 from ._udp import UDPSocket
 import _util
 
@@ -54,7 +56,10 @@ class Pong(object):
         return self._url
 
     def __init__(self, node_id, node_name, node_type, node_url):
-        self._id = node_id
+        if isinstance(node_id, basestring):
+            self._id = UUID(node_id)
+        else:
+            self._id = node_id
         self._name = node_name
         self._type = node_type
         self._url = node_url
@@ -74,12 +79,11 @@ class Pong(object):
         return result
 
 
-def ping(broadcast_port=50000, timeout=1):
+def ping(broadcast_port=50000, timeout=1000):
     result = []
-    ctx = zmq.Context()
 
     pong_host = _util.get_tcp_host()
-    pong_sink = ctx.socket(zmq.PULL)
+    pong_sink = _ZMQ_CONTEXT.socket(zmq.PULL)
     pong_port = pong_sink.bind_to_random_port('tcp://*')
 
     _ping = Ping(pong_host, pong_port)
@@ -91,9 +95,11 @@ def ping(broadcast_port=50000, timeout=1):
     start = time.time()
     poller = zmq.Poller()
     poller.register(pong_sink, zmq.POLLIN)
-    while (time.time() - start) < timeout:
+    elapsed = 0
+    while elapsed < timeout:
+        elapsed = (time.time() - start)*1000
         try:
-            events = dict(poller.poll(10))
+            events = dict(poller.poll(timeout/100))
         except KeyboardInterrupt:
             print "interrupt"
             break
@@ -107,6 +113,5 @@ def ping(broadcast_port=50000, timeout=1):
 
     paddle.close()
     pong_sink.close()
-    ctx.term()
 
     return result

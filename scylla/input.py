@@ -1,12 +1,24 @@
 import weakref
 
 from .slot import Slot
+from .input_connection import InputConnection
 
-from .request import get, put, delete
 from .response import Response, Statuses
 
 
 class Input(Slot):
+    @property
+    def is_dirty(self):
+        if self._connections:
+            result = [c.dirty for c in self._connections]
+        else:
+            result = [self._is_dirty]
+        return any(result)
+
+    @property
+    def is_multi(self):
+        return self._multi
+
     def __init__(self, name, put_handler, dirty_handler, pull_handler, type_hint=None, multi=False):
         super(Input, self).__init__(name, type_hint=type_hint)
 
@@ -19,20 +31,15 @@ class Input(Slot):
         self._multi = multi
         self._is_dirty = False
 
-    def pull_value(self, request):
+    def pull(self, request):
         result = {}
-        if self._is_dirty:
-            if self._connections:
-                # Values are not cached. If any source changes, all are pulled
-                for connection in self._connections:
-                    result[connection] = get(self._connections[connection])
-            else:
-                # No connections, handler provides the last value 'put' into
-                # the Input
-                result[None] = self._pull_handler(request)
+        if self._connections:
+            for connection in self._connections:
+                result[connection.url] = connection.pull(self._id)
+        else:
+            result[None] = self._pull_handler(request)
             self._is_dirty = False
-            return True, result
-        return False, result
+        return result
 
     def _dirty(self, request):
         if self._is_dirty:
@@ -44,10 +51,8 @@ class Input(Slot):
         # handler(request)
         self._dirty_handler(request)
 
-    def _get(self, request):
-        response = super(Input, self)._get(request)
-        response.data['multi'] = self._multi
-        return response
+    def _connection_dirtied(self, connection, request):
+        self._dirty(request)
 
     def _put(self, request):
         if self._connections:
@@ -65,49 +70,28 @@ class Input(Slot):
         return response
 
     def _put_connection(self, request):
-        if request.url.connection in self._connections:
-            if 'dirty' in request.data:
-                self._dirty(request)
-                return
-
-        force = request.data.get('force', False)
         try:
-            connection_url = request.data['url']
+            source_url = request.data['url']
         except KeyError:
-            response = Response(request.client, Statuses.BAD_REQUEST,
-                                data='Unable to connect. No connection URL provided.')
-            return response
+            msg = 'Unable to connect. No source URL provided.'
+            return Response(request.client, Statuses.BAD_REQUEST, data=msg)
 
-        if not self._multi:
-            if force:
-                source_url = '{0}/connections/{1}'.format(
-                    self._connections[0], self._id)
-                drop_response = delete(source_url)
-                if drop_response.status in (Statuses.OK, Statuses.NOT_FOUND):
-                    self._connections.pop()
-                else:
-                    response = Response(
-                        request.client, Statuses.BAD_REQUEST,
-                        data='Unable to connect. Failed to disconnect existing connection.')
-                    return response
-            else:
-                response = Response(
-                    request.client, Statuses.BAD_REQUEST,
-                    data='Unable to connect. Input has incoming connection.')
-                return response
+        if not self._multi and self._connections:
+            msg = 'Unable to connect. Input has incoming connection.'
+            return Response(request.client, Statuses.BAD_REQUEST, data=msg)
 
-        if request.client.connection != request.url.connection:
-            connect_response = put(
-                '{0}/connections/{1}'.format(connection_url, self._id),
-                data={'force': force, 'connection': self._url})
-            if connect_response.status is not Statuses.OK:
-                response = Response(request.client, Statuses.BAD_REQUEST,
-                                    data='Unable to connect. Source failed to connect.')
-                return response
-
-        self._connections.append(connection_url)
+        connection = InputConnection(source_url, self._connection_dirtied)
+        self._connections.append(connection)
         self._dirty(request)
-        return Response(request.client, Statuses.OK)
+
+        connection_url = '{0}/{1}'.format(request.url, connection.url.slot)
+        return Response(request.client, Statuses.OK, data={'url': connection_url})
+
+    def to_json(self):
+        result = super(Input, self).to_json()
+        result['dirty'] = self.is_dirty
+        result['multi'] = self.is_multi
+        return result
 
 
 class InputError(Exception):

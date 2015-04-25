@@ -1,11 +1,11 @@
-# Ports should fall somewhere between 49152 and 65535
-# _DEFAULT_PORT_START = 50000
-# DEFAULT_DISCOVERY_PORT = _DEFAULT_PORT_START + 1
-# DEFAULT_DIRECT_PORT_START = DEFAULT_DISCOVERY_PORT + 1
-#
+import zmq
+
+DEFAULT_DISCOVERY_PORT = 50000
+
+_ZMQ_CONTEXT = zmq.Context()
+
 from .node import Node
 from .ping import ping
-# from .node_handle import NodeHandle
-#
-# # from .util import publish, subscribe, ping, request, reply, terminate
-# from .util import terminate
+from .connect import connect
+from .request import post, get, put, delete
+from .response import Statuses

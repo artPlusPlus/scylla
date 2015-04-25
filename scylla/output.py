@@ -1,49 +1,51 @@
 import weakref
 
 from .slot import Slot
-from .request import put
+from .output_connection import OutputConnection, OutputConnectionError
+from .response import Response, Statuses
 
 
 class Output(Slot):
+    @property
+    def value(self):
+        return self._compute_handler_ref(None)
+
     def __init__(self, name, compute_handler, type_hint=None):
         super(Output, self).__init__(name, type_hint=type_hint)
 
         # self._compute_handler_ref = weakref.ref(compute_handler)
         self._compute_handler_ref = compute_handler
 
-    # def get(self, client=None):
-    #     handler = self._compute_handler_ref()
-    #     if not handler:
-    #         raise OutputError('Compute handler is dead.')
-    #     return handler(client)
-
     def dirty(self):
         for connection in self._connections:
-            put(connection, data={'dirty': True, 'url': self._url})
+            connection.dirty(self._id)
 
-    # def connect(self, target):
-    #     if not target._connect_source(self, False):
-    #         raise OutputError('Connection not made')
-    #     self._connect_target(target)
-    #
-    # def _connect_target(self, target):
-    #     self._target_refs.add(target)
-    #     return True
-    #
-    # def disconnect(self, target):
-    #     target._disconnect_source(self)
-    #     self._disconnect_target(target)
-    #
-    # def _disconnect_target(self, target):
-    #     try:
-    #         self._target_refs.remove(target)
-    #     except ValueError:
-    #         pass
+    def _get(self, request):
+        # handler = self._compute_handler_ref()
+        # if not handler:
+        #     raise OutputError('Compute handler is dead.')
+        response = super(Output, self)._get(request)
+        response.data['value'] = str(self._compute_handler_ref(request))
+        return response
 
-    def to_json(self, request=None):
+    def _put_connection(self, request):
+        try:
+            target_url = request.data['url']
+        except KeyError:
+            msg = 'Unable to connect. No source URL provided.'
+            return Response(request.client, Statuses.BAD_REQUEST, data=msg)
+
+        connection = OutputConnection(target_url)
+        self._connections.append(connection)
+        try:
+            connection.dirty(self._id)
+        except OutputConnectionError, e:
+            return Response(request.client, Statuses.BAD_REQUEST, data=e.message)
+        return Response(request.client, Statuses.OK)
+
+    def to_json(self):
         result = super(Output, self).to_json()
-        # result['value'] = self._compute_handler_ref()(request)
-        result['value'] = str(self._compute_handler_ref(request))
+        result['value'] = str(self.value)
         return result
 
 

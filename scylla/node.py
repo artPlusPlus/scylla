@@ -5,6 +5,7 @@ from multiprocessing import Process
 
 import zmq
 
+from . import _ZMQ_CONTEXT
 from ._udp import UDPSocket
 from .output import Output
 from .input import Input
@@ -16,13 +17,25 @@ import _util
 
 
 class Node(object):
+    @property
+    def id(self):
+        return self._id
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def running(self):
+        return self._running
+
     def __init__(self, name, id=None, discovery_port=50000):
         super(Node, self).__init__()
 
         self._name = name
         self._id = id or uuid.uuid4()
 
-        self._zmq_context = None
+        self._container = None
 
         self._slots = None
         self._outputs = None
@@ -56,17 +69,24 @@ class Node(object):
 
         kwargs['fork'] = fork
         if fork:
-            process = Process(target=self._start, kwargs=kwargs)
-            process.daemon = True
-            process.start()
+            container = Process(target=self._start, kwargs=kwargs)
+            container.daemon = True
+            container.start()
         else:
-            thread = Thread(target=self._start, kwargs=kwargs)
-            thread.daemon = True
-            thread.start()
+            container = Thread(target=self._start, kwargs=kwargs)
+            container.daemon = True
+            container.start()
+
+        self._container = container
+
+    def stop(self):
+        if self._forked:
+            raise NotImplementedError('Stop method implemented for forked Nodes.')
+        if self._running:
+            self._running = False
+            self._container.join()
 
     def _start(self, fork=False, **kwargs):
-        self._zmq_context = zmq.Context()
-
         self._slots = weakref.WeakValueDictionary()
         self._outputs = weakref.WeakValueDictionary()
         self._inputs = weakref.WeakValueDictionary()
@@ -90,9 +110,9 @@ class Node(object):
         self._ping_interface = UDPSocket()
         self._ping_interface.bind(self._ping_port)
 
-        self._pong_interface = self._zmq_context.socket(zmq.PUSH)
+        self._pong_interface = _ZMQ_CONTEXT.socket(zmq.PUSH)
 
-        self._request_interface = self._zmq_context.socket(zmq.ROUTER)
+        self._request_interface = _ZMQ_CONTEXT.socket(zmq.ROUTER)
         if fork:
             self._host = _util.get_tcp_host()
             self._request_port = self._request_interface.bind_to_random_port('tcp://*')
@@ -166,10 +186,12 @@ class Node(object):
         return response
 
     def _close_interface(self):
-        self._ping_interface.close()
-        self._pong_interface.close()
-        self._request_interface.close()
-        self._zmq_context.term()
+        if self._pong_interface:
+            self._ping_interface.close()
+        if self._pong_interface:
+            self._pong_interface.close()
+        if self._request_interface:
+            self._request_interface.close()
 
     def _compute_id(self, request):
         return self._id
@@ -187,14 +209,13 @@ class Node(object):
         return self._new_name
 
     def _compute_name(self, request):
-        was_dirty, new_name = self._name_in.pull_value(request)
-        if was_dirty:
-            self._name = new_name[new_name.keys()[0]]
+        if self._name_in.is_dirty:
+            self._name = self._name_in.pull(request).values()[0]
         return self._name
 
     def to_json(self):
-        result = {'id': str(self._id),
-                  'name': self._name,
+        result = {'id': str(self._id_out.value),
+                  'name': self._name_out.value,
                   'type': self.__class__.__name__,
                   'inputs': [i.to_json() for i in self._inputs.values()],
                   'outputs': [o.to_json() for o in self._outputs.values()]}

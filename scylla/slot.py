@@ -44,6 +44,13 @@ class Slot(object):
                 response = self._get(request)
         elif request.method == Methods.PUT:
             if request.url.connection:
+                try:
+                    connection = self._connections[request.url.connection]
+                except KeyError:
+                    response = Response(request.client, Statuses.NOT_FOUND)
+                else:
+                    response = connection(request)
+            elif request.url.has_connections:
                 response = self._put_connection(request)
             else:
                 response = self._put(request)
@@ -92,7 +99,10 @@ class Slot(object):
         return response
 
     def _put_connection(self, request):
-        pass
+        response = Response(request.client,
+                            Statuses.NOT_IMPLEMENTED,
+                            data=['GET'])
+        return response
 
     def _delete_connection(self, request):
         if request.client.connection != request.url.connection:
@@ -121,6 +131,11 @@ class Slot(object):
         result = {'id': str(self._id),
                   'name': self._name,
                   'slot_type': self.__class__.__name__,
-                  'data_type_hint': self.type_hint.__name__,
                   'connections': [c.to_json() for c in self._connections]}
+
+        try:
+            result['data_type_hint'] = self.type_hint.__name__
+        except AttributeError:
+            result['data_type_hint'] = self.type_hint
+
         return result
