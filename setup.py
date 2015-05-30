@@ -27,7 +27,7 @@ setup(
     packages=['scylla'],
     install_requires=[
         'pyzmq',
-
+        'msgpack-python'
     ],
     extras_require={
         'test': ['py.test']
