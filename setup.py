@@ -29,8 +29,7 @@ setup(
         'pyzmq',
 
     ],
-
     extras_require={
-        'test': ['pytest'],
-    },
+        'test': ['py.test']
+    }
 )
