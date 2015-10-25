@@ -29,6 +29,13 @@ import _util
 
 
 class Ping(object):
+    """
+    Represents a general discovery request.
+
+    A Ping is a small construct containing response information. Nodes
+    that receive a Ping are able to use the response information to send
+    a Pong message with basic information about the Node.
+    """
     @property
     def pong_addr(self):
         return 'tcp://{0}:{1}'.format(self._pong_host, self._pong_port)
@@ -58,6 +65,12 @@ class Ping(object):
 
 
 class Pong(object):
+    """
+    A Pong message is a response to a Ping discovery request.
+
+    A Pong instance contains all information for initiating
+    further contact with a given node.
+    """
     @property
     def id(self):
         return self._id
@@ -99,17 +112,27 @@ class Pong(object):
 
 
 def ping(broadcast_port=50000, timeout=1000):
+    """
+    ping is the primary means for Node discovery.
+
+    A request is issued on the broadcast_port. Node responses are collected
+    for the duration of timeout.
+
+    :param broadcast_port: Port on which request will be sent.
+    :param timeout: Length of time in milliseconds ping will wait for responses.
+    :return: List of Pong objects.
+    """
     result = []
 
     pong_host = _util.get_tcp_host()
     pong_sink = _ZMQ_CONTEXT.socket(zmq.PULL)
     pong_port = pong_sink.bind_to_random_port('tcp://*')
 
-    _ping = Ping(pong_host, pong_port)
-    _ping = _ping.pack()
+    ping = Ping(pong_host, pong_port)
+    ping = ping.pack()
 
     paddle = UDPSocket()
-    paddle.send(_ping, broadcast_port)
+    paddle.send(ping, broadcast_port)
 
     start = time.time()
     poller = zmq.Poller()
@@ -124,11 +147,11 @@ def ping(broadcast_port=50000, timeout=1000):
             break
 
         if pong_sink in events:
-            _pong = pong_sink.recv()
-            if not _pong:
+            pong = pong_sink.recv()
+            if not pong:
                 continue
-            _pong = Pong.unpack(_pong)
-            result.append(_pong)
+            pong = Pong.unpack(pong)
+            result.append(pong)
 
     paddle.close()
     pong_sink.close()
